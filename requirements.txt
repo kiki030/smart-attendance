@@ -4,3 +4,6 @@ supabase
 python-dotenv
 numpy
 opencv-python
+python-multipart
+insightface
+onnxruntime
