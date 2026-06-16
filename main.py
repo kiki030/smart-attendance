@@ -1,6 +1,7 @@
 import os
 import numpy as np
-from fastapi import FastAPI
+import cv2
+from fastapi import FastAPI, UploadFile, File, Form
 from pydantic import BaseModel
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -125,6 +126,71 @@ def search_face():
                 "match": False,
                 "message": "Unknown Face",
             }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+# ── 人臉特徵提取函式（AI 模型橋接介面）───────────────────────
+def extract_face_embedding(img_matrix) -> list:
+    """
+    輸入：OpenCV BGR 影像矩陣 (numpy ndarray)
+    輸出：512 維人臉特徵向量 (list of float)
+
+    TODO: 未來整合 YOLOv8-Face 與 ArcFace 提取真實特徵。
+          流程：YOLOv8-Face 偵測人臉框 → 裁切對齊 → ArcFace 提取 512 維 Embedding。
+    """
+    # TODO: 未來整合 YOLOv8-Face 與 ArcFace 提取真實特徵。
+    # 暫時以 NumPy 隨機向量模擬，待模型就緒後替換此段。
+    embedding: list[float] = np.random.rand(512).tolist()
+    return embedding
+
+
+# ── 路由：真實人臉註冊（上傳照片 → 提取特徵 → 寫入 Supabase）─
+@app.post("/api/register-face")
+async def register_face(
+    student_id: str = Form(...),
+    name: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """
+    接收學生 ID、姓名與人臉照片（表單上傳），
+    利用 OpenCV 解碼影像後呼叫 extract_face_embedding() 提取特徵，
+    再將 student_id、name 與 face_embedding 寫入 Supabase student_faces 資料表。
+    """
+    try:
+        # ── Step 1：讀取上傳的影像檔案 bytes ──────────────────────
+        image_bytes = await file.read()
+
+        # ── Step 2：使用 NumPy + OpenCV 解碼為 BGR 影像矩陣 ──────
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        img_matrix = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if img_matrix is None:
+            return {
+                "status": "error",
+                "message": "無法解碼影像，請確認上傳的檔案為有效的圖片格式（JPG / PNG）。",
+            }
+
+        # ── Step 3：提取人臉特徵向量（呼叫 AI 模型橋接函式）─────
+        embedding: list[float] = extract_face_embedding(img_matrix)
+
+        # ── Step 4：將學生資料與特徵向量寫入 Supabase ─────────────
+        record = {
+            "student_id": student_id,
+            "name": name,
+            "face_embedding": embedding,
+        }
+        response = supabase.table("student_faces").insert(record).execute()
+
+        return {
+            "status": "success",
+            "message": f"{name}（{student_id}）人臉註冊成功！",
+            "data": response.data,
+        }
 
     except Exception as e:
         return {
