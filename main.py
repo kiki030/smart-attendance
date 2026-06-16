@@ -66,3 +66,68 @@ def test_insert(payload: StudentInsertRequest):
             "status": "error",
             "message": str(e),
         }
+
+
+# ── 路由：人臉比對搜尋（呼叫 Supabase RPC）───────────────────
+@app.post("/api/search-face")
+def search_face():
+    """
+    模擬攝影機抓取人臉後，生成 512 維 ArcFace Embedding，
+    並呼叫 Supabase RPC `match_student_face` 進行向量比對。
+
+    比對規則：
+    - similarity >= 0.7 → 識別成功，回傳學生資訊
+    - similarity < 0.7 或無結果 → 未知人臉，回傳 Unknown Face
+    """
+    MATCH_THRESHOLD = 0.7
+    MATCH_COUNT = 1
+
+    try:
+        # 生成 512 維隨機浮點數向量（模擬攝影機現場擷取的 ArcFace embedding）
+        query_embedding: list[float] = np.random.rand(512).tolist()
+
+        # 呼叫 Supabase RPC 進行向量相似度比對
+        response = supabase.rpc(
+            "match_student_face",
+            {
+                "query_embedding": query_embedding,
+                "match_threshold": MATCH_THRESHOLD,
+                "match_count": MATCH_COUNT,
+            },
+        ).execute()
+
+        results = response.data  # 比對結果串列
+
+        # ── 核心比對邏輯：未知人臉過濾防呆機制 ──────────────────
+        if results and len(results) > 0:
+            best_match = results[0]
+            similarity = best_match.get("similarity", 0)
+
+            if similarity >= MATCH_THRESHOLD:
+                # ✅ 識別成功：相似度達標
+                return {
+                    "status": "success",
+                    "match": True,
+                    "student": best_match,
+                }
+            else:
+                # ❌ 相似度不足：視為未知人臉
+                return {
+                    "status": "success",
+                    "match": False,
+                    "message": "Unknown Face",
+                    "similarity": similarity,
+                }
+        else:
+            # ❌ 資料庫無任何相符結果
+            return {
+                "status": "success",
+                "match": False,
+                "message": "Unknown Face",
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+        }
