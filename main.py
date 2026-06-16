@@ -18,6 +18,20 @@ SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY", "")
 # ── 初始化 Supabase Client ────────────────────────────────────
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ── [架構說明] 出勤紀錄表（第五階段雲端對接）─────────────────
+# 未來 POST /api/roll-call 點名成功後，已識別學生將寫入 Supabase 的
+# attendance_records 資料表，預期欄位結構如下：
+#
+#   attendance_records
+#   ├─ id            : uuid (PK, 自動產生)
+#   ├─ student_id    : text (外鍵對應 student_faces.student_id)
+#   ├─ name          : text
+#   ├─ similarity    : float4 (AI 比對相似度)
+#   ├─ status        : text  ('present' | 'unknown_alert')
+#   └─ recorded_at   : timestamptz (預設 now())
+#
+# TODO: 待資料表建立後，在 roll_call 路由中解除下方 INSERT 的註解。
+
 # ── 初始化 FastAPI ────────────────────────────────────────────
 app = FastAPI(
     title="Smart Attendance System API",
@@ -282,6 +296,139 @@ async def register_face(
 
     except HTTPException:
         raise  # 直接往上拋出（人臉未偵測錯誤）
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+        }
+
+
+# ── 路由：多人影像即時點名（教室全景 → 多臉偵測 → 批次比對）──
+@app.post("/api/roll-call")
+async def roll_call(
+    file: UploadFile = File(...),
+):
+    """
+    接收教室 USB 鏡頭拍下的全景畫面，進行多人臉即時點名辨識。
+
+    流程：
+      YOLOv8-Face 偵測所有人臉
+      → for 每張人臉：提取 ArcFace Embedding → 呼叫 Supabase RPC 比對
+      → 已知學生（similarity ≥ 0.7）→ 加入 identified_students，status=present
+      → 未知人臉（similarity < 0.7 或無符合）→ status=unknown_alert
+
+    回傳：
+      total_detected    : 畫面中偵測到的總人臉數
+      identified_count  : 成功識別的已知學生數
+      unknown_count     : 未識別的未知人臉數
+      results           : 每張人臉的詳細辨識結果列表
+
+    [TODO] 點名成功後將已知學生寫入 Supabase attendance_records 資料表。
+    """
+    MATCH_THRESHOLD = 0.7
+    MATCH_COUNT = 1
+
+    try:
+        # ── Step 1：讀取上傳的影像檔案 bytes ──────────────────────
+        image_bytes = await file.read()
+
+        # ── Step 2：使用 NumPy + OpenCV 解碼為 BGR 影像矩陣 ──────
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        img_matrix = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+        if img_matrix is None:
+            return {
+                "status": "error",
+                "message": "無法解碼影像，請確認上傳的檔案為有效的圖片格式（JPG / PNG）。",
+            }
+
+        # ── Step 3：YOLOv8-Face 偵測畫面中所有人臉 ───────────────
+        faces = face_app.get(img_matrix)
+        total_detected: int = len(faces)
+
+        if total_detected == 0:
+            return {
+                "status": "success",
+                "message": "畫面中未偵測到任何人臉。",
+                "total_detected": 0,
+                "identified_count": 0,
+                "unknown_count": 0,
+                "results": [],
+            }
+
+        # ── Step 4：Multi-face Loop —— 對每張臉個別比對 ──────────
+        results: list[dict] = []
+        identified_count: int = 0
+        unknown_count: int = 0
+
+        for face in faces:
+            # 提取該張人臉的 512 維 ArcFace 標準化 Embedding
+            face_embedding: list[float] = face.normed_embedding.tolist()
+
+            # 呼叫 Supabase RPC 進行向量相似度搜尋
+            rpc_response = supabase.rpc(
+                "match_student_face",
+                {
+                    "query_embedding": face_embedding,
+                    "match_threshold": MATCH_THRESHOLD,
+                    "match_count": MATCH_COUNT,
+                },
+            ).execute()
+
+            match_data = rpc_response.data
+
+            # ── 已知學生判斷（similarity >= 0.7）─────────────────
+            if match_data and len(match_data) > 0:
+                best = match_data[0]
+                similarity: float = float(best.get("similarity", 0))
+
+                if similarity >= MATCH_THRESHOLD:
+                    # ✅ 識別成功：加入已知學生列表
+                    results.append({
+                        "student_id": best.get("student_id", "unknown"),
+                        "name": best.get("name", "Unknown"),
+                        "similarity": round(similarity, 4),
+                        "status": "present",
+                    })
+                    identified_count += 1
+
+                    # TODO: 取消下方註解以啟用 attendance_records 寫入
+                    # supabase.table("attendance_records").insert({
+                    #     "student_id": best.get("student_id"),
+                    #     "name": best.get("name"),
+                    #     "similarity": similarity,
+                    #     "status": "present",
+                    # }).execute()
+
+                else:
+                    # ❌ 相似度不足：視為未知人臉
+                    results.append({
+                        "student_id": "unknown",
+                        "name": "Unknown",
+                        "similarity": round(similarity, 4),
+                        "status": "unknown_alert",
+                    })
+                    unknown_count += 1
+
+            else:
+                # ❌ 資料庫中完全無相符結果：未知人臉
+                results.append({
+                    "student_id": "unknown",
+                    "name": "Unknown",
+                    "similarity": 0.0,
+                    "status": "unknown_alert",
+                })
+                unknown_count += 1
+
+        # ── Step 5：組裝並回傳完整點名結果 ────────────────────────
+        return {
+            "status": "success",
+            "total_detected": total_detected,
+            "identified_count": identified_count,
+            "unknown_count": unknown_count,
+            "results": results,
+        }
+
     except Exception as e:
         return {
             "status": "error",
