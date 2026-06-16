@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import json
 import numpy as np
 import cv2
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -250,6 +251,10 @@ async def register_face(
             old_embedding: list[float] = row["face_embedding"]
 
             # Feature Fusion：引入 NumPy 進行向量平均融合
+            # 防呆：Supabase 有時回傳 JSON 字串而非 list，需先解析
+            if isinstance(old_embedding, str):
+                old_embedding = json.loads(old_embedding)
+
             old_vec = np.array(old_embedding, dtype=np.float64)
             new_vec = np.array(new_embedding, dtype=np.float64)
             fused_vec = (old_vec + new_vec) / 2.0
