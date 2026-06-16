@@ -36,19 +36,15 @@ class StudentInsertRequest(BaseModel):
     name: str
 
 
-# ── 人臉特徵提取函式（InsightFace 真實推論 + 水平鏡像增強）────
-def extract_face_embedding(img_matrix) -> list[list[float]]:
+# ── 人臉特徵提取函式（InsightFace 真實推論）───────────────────
+def extract_face_embedding(img_matrix) -> list[float]:
     """
     輸入：OpenCV BGR 影像矩陣 (numpy ndarray)
-    輸出：包含 1~2 組 512 維 ArcFace 標準化特徵向量的串列
+    輸出：512 維 ArcFace 標準化人臉特徵向量 (list[float])
 
-    流程：
-      1. YOLOv8-Face 偵測人臉框 → 對齊裁切 → ArcFace 提取原始 Embedding
-      2. 水平翻轉（Horizontal Flip）同一張圖再提取一次 Embedding
-         → 若翻轉後仍偵測到人臉，則一次產生雙倍角度特徵
-    防呆：若原圖未偵測到人臉，拋出 HTTPException 400
+    流程：YOLOv8-Face 偵測人臉框 → 對齊裁切 → ArcFace 提取 512 維 Embedding
+    防呆：若未偵測到人臉，拋出 HTTPException 400
     """
-    # ── 原始影像推論 ─────────────────────────────────────────────
     faces = face_app.get(img_matrix)
 
     if len(faces) == 0:
@@ -60,18 +56,8 @@ def extract_face_embedding(img_matrix) -> list[list[float]]:
             },
         )
 
-    # 取第一張人臉的標準化 Embedding
-    original_embedding: list[float] = faces[0].normed_embedding.tolist()
-    embeddings: list[list[float]] = [original_embedding]
-
-    # ── 水平翻轉增強：自動產生鏡像角度特徵 ─────────────────────
-    flipped = cv2.flip(img_matrix, 1)          # flipCode=1 → 水平翻轉
-    flipped_faces = face_app.get(flipped)
-    if len(flipped_faces) > 0:
-        flipped_embedding: list[float] = flipped_faces[0].normed_embedding.tolist()
-        embeddings.append(flipped_embedding)
-
-    return embeddings
+    # 取第一張偵測到的人臉之標準化 ArcFace Embedding
+    return faces[0].normed_embedding.tolist()
 
 
 # ── 路由：根路由健康檢查 ──────────────────────────────────────
@@ -146,9 +132,8 @@ async def search_face(
             }
 
         # ── Step 3：InsightFace 提取人臉 ArcFace Embedding ───────
-        # extract_face_embedding 回傳 list[list[float]]（含原始+鏡像）
-        # 比對時只需使用原始向量（index 0）即可
-        query_embedding: list[float] = extract_face_embedding(img_matrix)[0]
+        # 若未偵測到人臉，extract_face_embedding 會拋出 HTTPException 400
+        query_embedding: list[float] = extract_face_embedding(img_matrix)
 
         # ── Step 4：呼叫 Supabase RPC 進行向量相似度比對 ──────────
         response = supabase.rpc(
@@ -199,7 +184,7 @@ async def search_face(
         }
 
 
-# ── 路由：多角度人臉註冊（上傳照片 → 提取特徵 + 鏡像 → 批次寫入）
+# ── 路由：人臉註冊（Feature Fusion 在線平均融合，一學生一行）────────
 @app.post("/api/register-face")
 async def register_face(
     student_id: str = Form(...),
@@ -207,15 +192,13 @@ async def register_face(
     file: UploadFile = File(...),
 ):
     """
-    接收學生 ID、姓名與人臉照片（表單上傳），支援多角度重複呼叫：
+    接收學生 ID、姓名與人臉照片，實施 Online Feature Fusion 演算：
 
-    - 不刪除舊資料，每次直接 INSERT 新行（允許同一 student_id 多筆）
-    - 自動同時寫入原始特徵 + 水平翻轉（鏡像）特徵，一次獲得雙倍角度覆蓋
-    - Supabase match_student_face RPC 在比對時取相似度最高的結果
+    - 新註冊：直接提取特徵向量並寫入新行（INSERT）
+    - 重複上傳（其他角度照片）：讀呈舊向量，與新向量進行權衡均値融合，再 UPDATE 更新
 
-    流程：
-      YOLOv8-Face 偵測 → ArcFace 提取 512 維向量（原始 + 鏡像）
-      → 批次 INSERT 至 Supabase student_faces 資料表
+    融合公式： fused = (old_embedding + new_embedding) / 2
+    權益：符合第三正規化（一學生一行），多次註冊越渴不同角度特徵越豐富
     """
     try:
         # ── Step 1：讀取上傳的影像檔案 bytes ──────────────────────
@@ -231,32 +214,66 @@ async def register_face(
                 "message": "無法解碼影像，請確認上傳的檔案為有效的圖片格式（JPG / PNG）。",
             }
 
-        # ── Step 3：InsightFace 提取人臉 ArcFace Embedding（含鏡像）
-        # 回傳 list[list[float]]，最多 2 組：[原始向量, 鏡像向量]
+        # ── Step 3：InsightFace 提取人臉 ArcFace Embedding ───────────
         # 若未偵測到人臉，extract_face_embedding 會拋出 HTTPException 400
-        embeddings: list[list[float]] = extract_face_embedding(img_matrix)
+        new_embedding: list[float] = extract_face_embedding(img_matrix)
 
-        # ── Step 4：批次 INSERT 每一組向量至 Supabase ──────────────
-        # 不刪除舊資料，直接新增（支援同一 student_id 多角度多筆）
-        records = [
-            {
+        # ── Step 4：查詢該 student_id 是否已存在於 Supabase ───────────
+        existing = (
+            supabase.table("student_faces")
+            .select("id, face_embedding")
+            .eq("student_id", student_id)
+            .limit(1)
+            .execute()
+        )
+
+        if not existing.data:
+            # ─── 新註冊：直接 INSERT ────────────────────────────────────
+            record = {
                 "student_id": student_id,
                 "name": name,
-                "face_embedding": emb,
+                "face_embedding": new_embedding,
             }
-            for emb in embeddings
-        ]
-        response = supabase.table("student_faces").insert(records).execute()
+            response = supabase.table("student_faces").insert(record).execute()
 
-        angle_count = len(embeddings)
-        flip_note = "（原始 + 水平鏡像）" if angle_count == 2 else "（僅原始，鏡像未偵測到人臉）"
+            return {
+                "status": "success",
+                "action": "inserted",
+                "message": f"{name}（{student_id}）人臉註冊成功！張入新特徵向量。",
+                "data": response.data,
+            }
 
-        return {
-            "status": "success",
-            "message": f"{name}（{student_id}）多角度人臉註冊成功！寫入 {angle_count} 組特徵向量 {flip_note}",
-            "vectors_inserted": angle_count,
-            "data": response.data,
-        }
+        else:
+            # ─── 重複上傳：均値融合後 UPDATE ─────────────────────────
+            row = existing.data[0]
+            row_id = row["id"]
+            old_embedding: list[float] = row["face_embedding"]
+
+            # Feature Fusion：引入 NumPy 進行向量平均融合
+            old_vec = np.array(old_embedding, dtype=np.float64)
+            new_vec = np.array(new_embedding, dtype=np.float64)
+            fused_vec = (old_vec + new_vec) / 2.0
+
+            # L2 正規化：確保融合後向量仍為單位長度（和 ArcFace 輸出一致）
+            norm = np.linalg.norm(fused_vec)
+            if norm > 0:
+                fused_vec = fused_vec / norm
+            fused_list: list[float] = fused_vec.tolist()
+
+            # UPDATE 該學生的特徵向量
+            response = (
+                supabase.table("student_faces")
+                .update({"face_embedding": fused_list, "name": name})
+                .eq("id", row_id)
+                .execute()
+            )
+
+            return {
+                "status": "success",
+                "action": "fused_and_updated",
+                "message": f"{name}（{student_id}）特徵融合完成！新角度特徵已均値嵌入至雲端向量。",
+                "data": response.data,
+            }
 
     except HTTPException:
         raise  # 直接往上拋出（人臉未偵測錯誤）
