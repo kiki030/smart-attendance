@@ -29,6 +29,16 @@ export default function FaceRegistration({ user }: Props) {
     return () => { stream?.getTracks().forEach(t => t.stop()) }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── 核心修正：切換步驟時 video 元素會重新掛載，需重新綁定 srcObject ──
+  // 當該步驟尚無預覽照片（previews[currentStep] 為 null）且 stream 存在時，
+  // 將 stream 重新注入新的 <video> DOM 元素。
+  useEffect(() => {
+    if (!previews[currentStep] && stream && videoRef.current) {
+      videoRef.current.srcObject = stream
+      videoRef.current.play().catch(() => {})
+    }
+  }, [previews, currentStep, stream])
+
   async function startWebcam() {
     try {
       setCamError('')
@@ -114,7 +124,12 @@ export default function FaceRegistration({ user }: Props) {
     } catch (e) {
       newStatus[currentStep] = 'error'
       setUploadStatus([...newStatus])
-      setUploadMsg(`⚠️ 上傳失敗：${e instanceof Error ? e.message : '請確認後端伺服器已啟動'}`)
+      const raw = e instanceof Error ? e.message : String(e)
+      // 「Failed to fetch」= 後端根本沒在跑，給更友善的提示
+      const hint = (raw.includes('fetch') || raw.includes('Failed') || raw.includes('NetworkError'))
+        ? '後端 AI 伺服器未啟動。請先在本機執行 uvicorn main:app --reload，或確認 ngrok 穿透已開啟。'
+        : raw
+      setUploadMsg(`⚠️ 上傳失敗：${hint}`)
     }
   }
 

@@ -540,6 +540,23 @@ body {
 }
 .page-date { font-size: 0.82rem; color: var(--text-muted); }
 
+.page-date-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.page-time-inline {
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+  background: linear-gradient(90deg, #a5b4fc, #c4b5fd);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
 .section-title-lg {
   font-size: 1rem;
   font-weight: 700;

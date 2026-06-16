@@ -67,19 +67,15 @@ export default function StudentDashboard({ user }: Props) {
   const todayRecord = records.find(r => r.date === today)
   const todayStatus = todayRecord?.status || 'absent'
 
-  // Pie chart data
+  // Pie chart data（僅保留出席/遲到/缺席）
   const present = records.filter(r => r.status === 'present').length
   const late = records.filter(r => r.status === 'late').length
   const absent = records.filter(r => r.status === 'absent').length
-  const sick = records.filter(r => r.status === 'excused_sick').length
-  const personal = records.filter(r => r.status === 'excused_personal').length
 
   const pieData: PieData[] = [
     { name: '正常出席', value: present, color: '#4ade80' },
     { name: '遲到', value: late, color: '#fbbf24' },
     { name: '缺席', value: absent, color: '#f87171' },
-    { name: '病假', value: sick, color: '#60a5fa' },
-    { name: '事假', value: personal, color: '#a78bfa' },
   ].filter(d => d.value > 0)
 
   async function handleLogout() {
@@ -105,7 +101,6 @@ export default function StudentDashboard({ user }: Props) {
       <nav className="navbar">
         <div className="nav-left">
           <div className="nav-logo">🎓 <span className="nav-logo-text">南台科技大學智慧點名</span></div>
-          <div className="nav-clock">{time.toLocaleTimeString('zh-TW', { hour12: false })}</div>
         </div>
         <div className="nav-right">
           {user.avatarUrl
@@ -124,9 +119,12 @@ export default function StudentDashboard({ user }: Props) {
       <div className="dashboard-content">
         <div className="page-header">
           <h1 className="page-title">學生即時看板</h1>
-          <p className="page-date">
-            {time.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
-          </p>
+          <div className="page-date-row">
+            <p className="page-date">
+              {time.toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
+            </p>
+            <span className="page-time-inline">{time.toLocaleTimeString('zh-TW', { hour12: false })}</span>
+          </div>
         </div>
 
         {/* 今日出勤狀態卡片 */}
@@ -161,10 +159,6 @@ export default function StudentDashboard({ user }: Props) {
               <div className="mini-stat" style={{ borderColor: '#f87171' }}>
                 <span className="mini-num" style={{ color: '#f87171' }}>{absent}</span>
                 <span className="mini-label">缺席</span>
-              </div>
-              <div className="mini-stat" style={{ borderColor: '#60a5fa' }}>
-                <span className="mini-num" style={{ color: '#60a5fa' }}>{sick + personal}</span>
-                <span className="mini-label">請假</span>
               </div>
             </div>
           </div>
