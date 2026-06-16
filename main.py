@@ -35,15 +35,19 @@ class StudentInsertRequest(BaseModel):
     name: str
 
 
-# ── 人臉特徵提取函式（InsightFace 真實推論）───────────────────
-def extract_face_embedding(img_matrix) -> list:
+# ── 人臉特徵提取函式（InsightFace 真實推論 + 水平鏡像增強）────
+def extract_face_embedding(img_matrix) -> list[list[float]]:
     """
     輸入：OpenCV BGR 影像矩陣 (numpy ndarray)
-    輸出：512 維 ArcFace 標準化人臉特徵向量 (list of float)
+    輸出：包含 1~2 組 512 維 ArcFace 標準化特徵向量的串列
 
-    流程：YOLOv8-Face 偵測人臉框 → 對齊裁切 → ArcFace 提取 512 維 Embedding
-    防呆：若未偵測到人臉，拋出 HTTPException 400
+    流程：
+      1. YOLOv8-Face 偵測人臉框 → 對齊裁切 → ArcFace 提取原始 Embedding
+      2. 水平翻轉（Horizontal Flip）同一張圖再提取一次 Embedding
+         → 若翻轉後仍偵測到人臉，則一次產生雙倍角度特徵
+    防呆：若原圖未偵測到人臉，拋出 HTTPException 400
     """
+    # ── 原始影像推論 ─────────────────────────────────────────────
     faces = face_app.get(img_matrix)
 
     if len(faces) == 0:
@@ -55,9 +59,18 @@ def extract_face_embedding(img_matrix) -> list:
             },
         )
 
-    # 取第一張偵測到的人臉之標準化 Embedding 向量
-    embedding: list[float] = faces[0].normed_embedding.tolist()
-    return embedding
+    # 取第一張人臉的標準化 Embedding
+    original_embedding: list[float] = faces[0].normed_embedding.tolist()
+    embeddings: list[list[float]] = [original_embedding]
+
+    # ── 水平翻轉增強：自動產生鏡像角度特徵 ─────────────────────
+    flipped = cv2.flip(img_matrix, 1)          # flipCode=1 → 水平翻轉
+    flipped_faces = face_app.get(flipped)
+    if len(flipped_faces) > 0:
+        flipped_embedding: list[float] = flipped_faces[0].normed_embedding.tolist()
+        embeddings.append(flipped_embedding)
+
+    return embeddings
 
 
 # ── 路由：根路由健康檢查 ──────────────────────────────────────
@@ -132,8 +145,9 @@ async def search_face(
             }
 
         # ── Step 3：InsightFace 提取人臉 ArcFace Embedding ───────
-        # 若未偵測到人臉，extract_face_embedding 會拋出 HTTPException 400
-        query_embedding: list[float] = extract_face_embedding(img_matrix)
+        # extract_face_embedding 回傳 list[list[float]]（含原始+鏡像）
+        # 比對時只需使用原始向量（index 0）即可
+        query_embedding: list[float] = extract_face_embedding(img_matrix)[0]
 
         # ── Step 4：呼叫 Supabase RPC 進行向量相似度比對 ──────────
         response = supabase.rpc(
@@ -184,7 +198,7 @@ async def search_face(
         }
 
 
-# ── 路由：真實人臉註冊（上傳照片 → 提取特徵 → 寫入 Supabase）─
+# ── 路由：多角度人臉註冊（上傳照片 → 提取特徵 + 鏡像 → 批次寫入）
 @app.post("/api/register-face")
 async def register_face(
     student_id: str = Form(...),
@@ -192,9 +206,15 @@ async def register_face(
     file: UploadFile = File(...),
 ):
     """
-    接收學生 ID、姓名與人臉照片（表單上傳），
-    利用 InsightFace (YOLOv8-Face + ArcFace) 提取 512 維標準化特徵向量，
-    再將 student_id、name 與 face_embedding 寫入 Supabase student_faces 資料表。
+    接收學生 ID、姓名與人臉照片（表單上傳），支援多角度重複呼叫：
+
+    - 不刪除舊資料，每次直接 INSERT 新行（允許同一 student_id 多筆）
+    - 自動同時寫入原始特徵 + 水平翻轉（鏡像）特徵，一次獲得雙倍角度覆蓋
+    - Supabase match_student_face RPC 在比對時取相似度最高的結果
+
+    流程：
+      YOLOv8-Face 偵測 → ArcFace 提取 512 維向量（原始 + 鏡像）
+      → 批次 INSERT 至 Supabase student_faces 資料表
     """
     try:
         # ── Step 1：讀取上傳的影像檔案 bytes ──────────────────────
@@ -210,21 +230,30 @@ async def register_face(
                 "message": "無法解碼影像，請確認上傳的檔案為有效的圖片格式（JPG / PNG）。",
             }
 
-        # ── Step 3：InsightFace 提取人臉 ArcFace Embedding ───────
+        # ── Step 3：InsightFace 提取人臉 ArcFace Embedding（含鏡像）
+        # 回傳 list[list[float]]，最多 2 組：[原始向量, 鏡像向量]
         # 若未偵測到人臉，extract_face_embedding 會拋出 HTTPException 400
-        embedding: list[float] = extract_face_embedding(img_matrix)
+        embeddings: list[list[float]] = extract_face_embedding(img_matrix)
 
-        # ── Step 4：將學生資料與特徵向量寫入 Supabase ─────────────
-        record = {
-            "student_id": student_id,
-            "name": name,
-            "face_embedding": embedding,
-        }
-        response = supabase.table("student_faces").insert(record).execute()
+        # ── Step 4：批次 INSERT 每一組向量至 Supabase ──────────────
+        # 不刪除舊資料，直接新增（支援同一 student_id 多角度多筆）
+        records = [
+            {
+                "student_id": student_id,
+                "name": name,
+                "face_embedding": emb,
+            }
+            for emb in embeddings
+        ]
+        response = supabase.table("student_faces").insert(records).execute()
+
+        angle_count = len(embeddings)
+        flip_note = "（原始 + 水平鏡像）" if angle_count == 2 else "（僅原始，鏡像未偵測到人臉）"
 
         return {
             "status": "success",
-            "message": f"{name}（{student_id}）人臉註冊成功！",
+            "message": f"{name}（{student_id}）多角度人臉註冊成功！寫入 {angle_count} 組特徵向量 {flip_note}",
+            "vectors_inserted": angle_count,
             "data": response.data,
         }
 
