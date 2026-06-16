@@ -1,0 +1,326 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+/* ── Reset & Base ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #050a14;
+  --surface: rgba(255, 255, 255, 0.04);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e2e8f0;
+  --text-muted: #64748b;
+  --accent: #6366f1;
+  --accent2: #8b5cf6;
+  --glow: rgba(99, 102, 241, 0.4);
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ── App Root ─────────────────────────────────────────────── */
+.app-root {
+  min-height: 100vh;
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding: 2rem 1rem 4rem;
+}
+
+/* ── Background Orbs ─────────────────────────────────────── */
+.bg-orb {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0.18;
+  pointer-events: none;
+  animation: drift 12s ease-in-out infinite alternate;
+}
+.orb1 { width: 600px; height: 600px; background: #6366f1; top: -150px; left: -100px; animation-delay: 0s; }
+.orb2 { width: 500px; height: 500px; background: #8b5cf6; bottom: -100px; right: -80px; animation-delay: 4s; }
+.orb3 { width: 400px; height: 400px; background: #06b6d4; top: 40%; left: 50%; transform: translate(-50%, -50%); animation-delay: 8s; }
+
+@keyframes drift {
+  from { transform: translate(0, 0) scale(1); }
+  to   { transform: translate(30px, 20px) scale(1.08); }
+}
+
+/* ── Container ───────────────────────────────────────────── */
+.container {
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+  z-index: 1;
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  width: fit-content;
+  backdrop-filter: blur(20px);
+}
+
+.badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  text-transform: uppercase;
+  background: rgba(99, 102, 241, 0.15);
+  padding: 0.25rem 0.75rem;
+  border-radius: 100px;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #4ade80;
+  transition: opacity 0.5s;
+}
+.pulse-on  { opacity: 1; box-shadow: 0 0 8px #4ade80; }
+.pulse-off { opacity: 0.4; }
+
+.status-text { font-size: 0.8rem; color: #4ade80; font-weight: 500; }
+
+/* ── Hero ────────────────────────────────────────────────── */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1.25rem;
+  padding: 3rem 2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  backdrop-filter: blur(20px);
+  position: relative;
+  overflow: hidden;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(99,102,241,0.06) 0%, rgba(139,92,246,0.04) 100%);
+  pointer-events: none;
+}
+
+/* ── AI Core Animation ───────────────────────────────────── */
+.ai-core {
+  width: 100px; height: 100px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.core-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  animation: spin 4s linear infinite;
+}
+.ring1 {
+  inset: 0;
+  border-top-color: var(--accent);
+  border-right-color: rgba(99,102,241,0.3);
+}
+.ring2 {
+  inset: 12px;
+  border-bottom-color: var(--accent2);
+  border-left-color: rgba(139,92,246,0.3);
+  animation-duration: 2.5s;
+  animation-direction: reverse;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.core-inner {
+  font-size: 2.5rem;
+  z-index: 1;
+  filter: drop-shadow(0 0 20px rgba(99,102,241,0.8));
+}
+
+/* ── Title ───────────────────────────────────────────────── */
+.title {
+  font-size: clamp(2rem, 5vw, 3.2rem);
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #e2e8f0 0%, #a5b4fc 40%, #c4b5fd 70%, #e2e8f0 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1.1;
+}
+
+.subtitle {
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.3em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.description {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.8;
+  max-width: 480px;
+}
+
+/* ── Time Display ────────────────────────────────────────── */
+.time-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+  padding: 1rem 2rem;
+  background: rgba(0,0,0,0.3);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+}
+
+.time {
+  font-size: 2.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.05em;
+  background: linear-gradient(90deg, #a5b4fc, #c4b5fd);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.date {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+/* ── Modules ─────────────────────────────────────────────── */
+.section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 1rem;
+}
+
+.module-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1rem;
+}
+
+.module-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  animation: fadeInUp 0.5s ease both;
+  cursor: default;
+}
+
+.module-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 8px 30px rgba(99, 102, 241, 0.15);
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.module-icon { font-size: 1.8rem; }
+.module-info { display: flex; flex-direction: column; gap: 0.25rem; }
+.module-label { font-size: 0.85rem; font-weight: 500; color: var(--text); }
+.module-status { font-size: 0.72rem; font-weight: 600; }
+
+/* ── API Section ─────────────────────────────────────────── */
+.api-card {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+}
+
+.api-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.api-url {
+  flex: 1;
+  font-size: 0.85rem;
+  color: #a5b4fc;
+  background: rgba(99,102,241,0.1);
+  padding: 0.35rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(99,102,241,0.2);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.api-link {
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  padding: 0.4rem 1rem;
+  border: 1px solid rgba(99,102,241,0.4);
+  border-radius: 8px;
+  transition: background 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
+}
+.api-link:hover {
+  background: rgba(99,102,241,0.15);
+  box-shadow: 0 0 12px var(--glow);
+}
+
+/* ── Footer ──────────────────────────────────────────────── */
+.footer {
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+}
+
+/* ── Responsive ──────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .hero { padding: 2rem 1.25rem; }
+  .time { font-size: 2rem; }
+  .module-grid { grid-template-columns: 1fr; }
+  .api-card { flex-direction: column; align-items: flex-start; }
+}
