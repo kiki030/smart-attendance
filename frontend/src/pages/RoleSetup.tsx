@@ -14,6 +14,7 @@ const TEACHER_CODE = 'STUST2024'
 export default function RoleSetup({ session, onSetup }: Props) {
   const [role, setRole] = useState<UserRoleType>('student')
   const [studentId, setStudentId] = useState('')
+  const [studentName, setStudentName] = useState('')
   const [teacherCode, setTeacherCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -31,11 +32,15 @@ export default function RoleSetup({ session, onSetup }: Props) {
       setError('請輸入您的學號')
       return
     }
+    if (role === 'student' && !studentName.trim()) {
+      setError('請輸入您的姓名')
+      return
+    }
 
     setLoading(true)
     try {
       const displayName = role === 'student'
-        ? `${studentId} ${googleName}`
+        ? `${studentId.trim()} ${studentName.trim()}`
         : googleName
 
       const { error: dbError } = await supabase.from('user_roles').insert({
@@ -101,17 +106,30 @@ export default function RoleSetup({ session, onSetup }: Props) {
 
           {/* 條件輸入 */}
           {role === 'student' && (
-            <div className="setup-field">
-              <label className="setup-label">學號</label>
-              <input
-                className="setup-input"
-                type="text"
-                placeholder="請輸入學號（如：4B2G0037）"
-                value={studentId}
-                onChange={e => setStudentId(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleSubmit()}
-              />
-            </div>
+            <>
+              <div className="setup-field">
+                <label className="setup-label">學號</label>
+                <input
+                  className="setup-input"
+                  type="text"
+                  placeholder="請輸入學號（如：4B2G0037）"
+                  value={studentId}
+                  onChange={e => setStudentId(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+                />
+              </div>
+              <div className="setup-field" style={{ marginTop: '1rem' }}>
+                <label className="setup-label">姓名</label>
+                <input
+                  className="setup-input"
+                  type="text"
+                  placeholder="請輸入學生姓名（如：王小明）"
+                  value={studentName}
+                  onChange={e => setStudentName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+                />
+              </div>
+            </>
           )}
 
           {role === 'teacher' && (

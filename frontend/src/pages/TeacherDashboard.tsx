@@ -234,6 +234,7 @@ export default function TeacherDashboard({ user }: Props) {
   }
 
   async function handleLogout() {
+    localStorage.removeItem('smart_attendance_demo_session')
     await supabase.auth.signOut()
     navigate('/login')
   }

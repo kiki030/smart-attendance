@@ -79,6 +79,7 @@ export default function StudentDashboard({ user }: Props) {
   ].filter(d => d.value > 0)
 
   async function handleLogout() {
+    localStorage.removeItem('smart_attendance_demo_session')
     await supabase.auth.signOut()
     navigate('/login')
   }

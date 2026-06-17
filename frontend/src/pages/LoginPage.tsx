@@ -12,6 +12,29 @@ export default function LoginPage() {
     })
   }
 
+  function handleDemoLogin() {
+    // Generate a unique mock session for local demo/test mode
+    const mockSession = {
+      access_token: 'demo-token',
+      refresh_token: 'demo-token',
+      expires_in: 3600,
+      token_type: 'bearer',
+      user: {
+        id: 'demo-' + Math.random().toString(36).substring(2, 9),
+        email: `demo_${Date.now()}@example.com`,
+        user_metadata: {
+          full_name: '測試使用者',
+          avatar_url: '',
+        },
+        aud: 'authenticated',
+        role: 'authenticated',
+        created_at: new Date().toISOString(),
+      }
+    }
+    localStorage.setItem('smart_attendance_demo_session', JSON.stringify(mockSession))
+    window.location.reload()
+  }
+
   return (
     <div className="app-root">
       {/* 動態背景光球 */}
@@ -46,6 +69,11 @@ export default function LoginPage() {
               <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
             </svg>
             使用 Google 帳戶登入
+          </button>
+
+          {/* 測試版登入按鈕 */}
+          <button className="demo-btn" onClick={handleDemoLogin}>
+            🚀 進入測試版 (免 Google 登入)
           </button>
 
           <div className="login-divider" />

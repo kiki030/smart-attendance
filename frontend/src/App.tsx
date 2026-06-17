@@ -17,6 +17,28 @@ export default function App() {
   const navigate = useNavigate()
 
   useEffect(() => {
+    // Check for demo session in localStorage first
+    const demoSessionStr = localStorage.getItem('smart_attendance_demo_session')
+    if (demoSessionStr) {
+      try {
+        const ds = JSON.parse(demoSessionStr) as Session
+        setSession(ds)
+        void loadUserRole(ds)
+        // Set up dummy auth listener that handles demo logout
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+          if (!session) {
+            localStorage.removeItem('smart_attendance_demo_session')
+            setSession(null)
+            setAppUser(null)
+            navigate('/login', { replace: true })
+          }
+        })
+        return () => subscription.unsubscribe()
+      } catch {
+        localStorage.removeItem('smart_attendance_demo_session')
+      }
+    }
+
     // Check for existing session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session)
@@ -26,6 +48,15 @@ export default function App() {
 
     // Listen for auth state changes (login / logout / token refresh)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (localStorage.getItem('smart_attendance_demo_session')) {
+        if (!session) {
+          localStorage.removeItem('smart_attendance_demo_session')
+          setSession(null)
+          setAppUser(null)
+          navigate('/login', { replace: true })
+        }
+        return
+      }
       setSession(session)
       if (session) {
         void loadUserRole(session)
