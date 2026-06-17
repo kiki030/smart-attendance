@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import type { AppUser, AttendanceRecord } from '../types'
 import { STATUS_LABELS } from '../types'
+import { useApiBase } from '../hooks/useApiBase'
 import '../App.css'
 
 interface Props { user: AppUser }
@@ -17,6 +18,7 @@ const MOCK_RECORDS: AttendanceRecord[] = [
 
 export default function TeacherDashboard({ user }: Props) {
   const navigate = useNavigate()
+  const { status: backendStatus } = useApiBase()
   const videoRef = useRef<HTMLVideoElement>(null)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [rollCallActive, setRollCallActive] = useState(false)
@@ -113,6 +115,16 @@ export default function TeacherDashboard({ user }: Props) {
         <div className="nav-left">
           <div className="nav-logo">🎓 <span className="nav-logo-text">南台科技大學智慧點名</span></div>
           <div className="nav-clock">{timeStr}</div>
+          {/* AI 後端狀態點 */}
+          <div className={`backend-status-dot ${
+            backendStatus === 'online' ? 'bs-online' :
+            backendStatus === 'offline' ? 'bs-offline' : 'bs-checking'
+          }`} title={`AI 後端：${
+            backendStatus === 'online' ? '在線' :
+            backendStatus === 'offline' ? '離線' : '檢測中'
+          }`}>
+            <span className="bs-label">AI {backendStatus === 'online' ? '在線' : backendStatus === 'offline' ? '離線' : '檢測'}</span>
+          </div>
         </div>
         <div className="nav-right">
           {user.avatarUrl

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { AppUser } from '../types'
+import { useApiBase } from '../hooks/useApiBase'
 import '../App.css'
 
 interface Props { user: AppUser }
@@ -11,10 +12,9 @@ const STEPS = [
   { label: '右側臉', icon: '👉', hint: '請稍微向左轉頭，露出右側臉輪廓' },
 ]
 
-const API_BASE = 'http://127.0.0.1:8000'
-
 export default function FaceRegistration({ user }: Props) {
   const navigate = useNavigate()
+  const { apiBase, status: backendStatus, recheckStatus } = useApiBase()
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [stream, setStream] = useState<MediaStream | null>(null)
@@ -103,7 +103,7 @@ export default function FaceRegistration({ user }: Props) {
       formData.append('student_id', user.studentId || user.email)
       formData.append('name', user.name)
 
-      const response = await fetch(`${API_BASE}/api/register-face`, {
+      const response = await fetch(`${apiBase}/api/register-face`, {
         method: 'POST',
         body: formData,
       })
@@ -157,6 +157,17 @@ export default function FaceRegistration({ user }: Props) {
       </nav>
 
       <div className="dashboard-content">
+      {/* 後端狀態橫幅 */}
+        {backendStatus === 'offline' && (
+          <div className="backend-offline-banner">
+            ⚠️ AI 後端伺服器未連線 — 請在本機執行 <code>start.bat</code> 一鍵啟動，或手動執行 <code>uvicorn main:app --reload</code>
+            <button className="recheck-btn" onClick={recheckStatus}>🔄 重新連線</button>
+          </div>
+        )}
+        {backendStatus === 'checking' && (
+          <div className="backend-checking-banner">🔍 正在偵測後端連線...</div>
+        )}
+
         <div className="page-header">
           <h1 className="page-title">多角度人臉特徵註冊</h1>
           <p className="page-date">系統僅儲存 512 維特徵向量，不保留原始相片</p>

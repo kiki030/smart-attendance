@@ -4,6 +4,7 @@ import json
 import numpy as np
 import cv2
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -39,7 +40,22 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# ── 初始化 InsightFace AI 引擎（YOLOv8-Face + ArcFace）────────
+# ── CORS：允許 GitHub Pages、ngrok、本機開發 ─────────────────
+# allow_origins=["*"] 讓任意來源皆可呼叫（展示用）
+# 正式部署建議改為指定來源清單
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── 健康檢查端點（前端用來確認後端是否在線）──────────────────
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "version": "2.0.0", "ai_engine": "InsightFace buffalo_l"}
+
 # CPUExecutionProvider 確保跨平台相容性，GPU 環境可換成 CUDAExecutionProvider
 face_app = FaceAnalysis(providers=["CPUExecutionProvider"])
 face_app.prepare(ctx_id=0, det_size=(640, 640))
