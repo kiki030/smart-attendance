@@ -3,6 +3,7 @@ import os
 import json
 import numpy as np
 import cv2
+import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -408,13 +409,25 @@ async def roll_call(
                     })
                     identified_count += 1
 
-                    # TODO: 取消下方註解以啟用 attendance_records 寫入
-                    # supabase.table("attendance_records").insert({
-                    #     "student_id": best.get("student_id"),
-                    #     "name": best.get("name"),
-                    #     "similarity": similarity,
-                    #     "status": "present",
-                    # }).execute()
+                    # 避免重複寫入今日出勤紀錄
+                    today_str = datetime.date.today().isoformat()
+                    try:
+                        existing_att = supabase.table("attendance_records")\
+                            .select("id")\
+                            .eq("student_id", best.get("student_id"))\
+                            .eq("date", today_str)\
+                            .execute()
+                        
+                        if not existing_att.data:
+                            supabase.table("attendance_records").insert({
+                                "student_id": best.get("student_id"),
+                                "student_name": best.get("name"),
+                                "status": "present",
+                                "check_in_time": datetime.datetime.now().astimezone().isoformat(),
+                                "course_name": "人工智慧概論",
+                            }).execute()
+                    except Exception as e_db:
+                        print(f"    ⚠️ 寫入出勤紀錄失敗: {e_db}")
 
                 else:
                     # ❌ 相似度不足：視為未知人臉

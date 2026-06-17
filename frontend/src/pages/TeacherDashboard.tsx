@@ -18,11 +18,11 @@ const MOCK_RECORDS: AttendanceRecord[] = [
 
 export default function TeacherDashboard({ user }: Props) {
   const navigate = useNavigate()
-  const { status: backendStatus } = useApiBase()
+  const { apiBase, status: backendStatus } = useApiBase()
   const videoRef = useRef<HTMLVideoElement>(null)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [rollCallActive, setRollCallActive] = useState(false)
-  const [records, setRecords] = useState<AttendanceRecord[]>(MOCK_RECORDS)
+  const [records, setRecords] = useState<AttendanceRecord[]>([])
   const [savedRows, setSavedRows] = useState<Set<string>>(new Set())
   const [time, setTime] = useState(new Date())
   const [camError, setCamError] = useState('')
@@ -34,7 +34,107 @@ export default function TeacherDashboard({ user }: Props) {
   }, [])
 
   // Cleanup camera on unmount
-  useEffect(() => () => { stream?.getTracks().forEach(t => t.stop()) }, [stream])
+  useEffect(() => {
+    return () => {
+      stream?.getTracks().forEach(t => t.stop())
+    }
+  }, [stream])
+
+  // ── 讀取學生名冊與今日出勤紀錄 ────────────────────────────
+  const loadRosterAndAttendance = useCallback(async () => {
+    try {
+      // 1. 從 student_faces 讀取所有註冊學生的學號與姓名
+      const { data: students, error: studentError } = await supabase
+        .from('student_faces')
+        .select('student_id, name')
+
+      if (studentError) throw studentError
+
+      // 2. 讀取今日的出勤紀錄
+      const todayStr = new Date().toISOString().slice(0, 10)
+      const { data: todayRecords, error: recordError } = await supabase
+        .from('attendance_records')
+        .select('*')
+        .eq('date', todayStr)
+
+      if (recordError) throw recordError
+
+      // 3. 將註冊學生與出勤紀錄進行對接
+      const mappedRecords: AttendanceRecord[] = (students || []).map((student) => {
+        const record = (todayRecords || []).find(r => r.student_id === student.student_id)
+        return {
+          id: record?.id || `temp-${student.student_id}`,
+          student_id: student.student_id || '',
+          student_name: student.name || '未登錄姓名',
+          course_name: record?.course_name || '人工智慧概論',
+          date: todayStr,
+          status: record?.status || 'absent',
+          check_in_time: record?.check_in_time,
+          note: record?.note || '',
+        }
+      })
+
+      setRecords(mappedRecords)
+    } catch (err) {
+      console.error('Error loading roster/attendance:', err)
+      // 若 Supabase 載入失敗，則回退到 MOCK_RECORDS 作為示範
+      setRecords(MOCK_RECORDS)
+    }
+  }, [])
+
+  // 組件掛載後載入資料，且每 8 秒自動背景刷新一次，確保與雲端同步
+  useEffect(() => {
+    loadRosterAndAttendance()
+    const interval = setInterval(loadRosterAndAttendance, 8000)
+    return () => clearInterval(interval)
+  }, [loadRosterAndAttendance])
+
+  // ── 定期抓取 WebCam 畫面並送至 AI 後端進行多人點名 ─────────────────
+  useEffect(() => {
+    if (!rollCallActive || backendStatus !== 'online') return
+
+    const interval = setInterval(async () => {
+      const video = videoRef.current
+      if (!video || video.paused || video.ended) return
+
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = video.videoWidth || 640
+        canvas.height = video.videoHeight || 480
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+        canvas.toBlob(async (blob) => {
+          if (!blob) return
+          const file = new File([blob], 'rollcall_frame.jpg', { type: 'image/jpeg' })
+          const formData = new FormData()
+          formData.append('file', file)
+
+          try {
+            const res = await fetch(`${apiBase}/api/roll-call`, {
+              method: 'POST',
+              body: formData,
+            })
+            if (res.ok) {
+              const data = await res.json()
+              console.log('AI Roll Call Result:', data)
+              // 若有成功識別出任何人，立即重新載入出勤資料
+              if (data.identified_count > 0) {
+                loadRosterAndAttendance()
+              }
+            }
+          } catch (e) {
+            console.error('Failed to send frame to AI roll call:', e)
+          }
+        }, 'image/jpeg', 0.8)
+      } catch (err) {
+        console.error('Error capturing frame:', err)
+      }
+    }, 3000) // 每 3 秒比對一次
+
+    return () => clearInterval(interval)
+  }, [rollCallActive, backendStatus, apiBase, loadRosterAndAttendance])
 
   const startWebcam = useCallback(async () => {
     try {
@@ -79,16 +179,46 @@ export default function TeacherDashboard({ user }: Props) {
   async function saveRow(id: string) {
     const rec = records.find(r => r.id === id)
     if (!rec) return
-    // If it's a real Supabase record (UUID), update it
     try {
-      await supabase.from('attendance_records').update({
-        status: rec.status,
-        note: rec.note,
-        updated_at: new Date().toISOString(),
-      }).eq('id', id)
-      setSavedRows(prev => new Set([...prev, id]))
-    } catch {
-      setSavedRows(prev => new Set([...prev, id]))
+      const isTemp = id.startsWith('temp-')
+      if (isTemp) {
+        // 新增出勤紀錄到 Supabase
+        const { data, error } = await supabase
+          .from('attendance_records')
+          .insert({
+            student_id: rec.student_id,
+            student_name: rec.student_name,
+            course_name: rec.course_name,
+            date: rec.date,
+            status: rec.status,
+            note: rec.note,
+            check_in_time: rec.check_in_time || null,
+          })
+          .select()
+          .single()
+        
+        if (error) throw error
+        
+        if (data) {
+          // 更新本地狀態中的 ID
+          setRecords(prev => prev.map(r => r.student_id === rec.student_id ? { ...r, id: data.id } : r))
+        }
+      } else {
+        // 更新現有出勤紀錄
+        const { error } = await supabase
+          .from('attendance_records')
+          .update({
+            status: rec.status,
+            note: rec.note,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', id)
+          
+        if (error) throw error
+      }
+      setSavedRows(prev => { const n = new Set(prev); n.add(rec.id); return n })
+    } catch (err) {
+      console.error('Error saving attendance record:', err)
     }
   }
 
