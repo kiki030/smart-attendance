@@ -24,16 +24,7 @@ export default function App() {
         const ds = JSON.parse(demoSessionStr) as Session
         setSession(ds)
         void loadUserRole(ds)
-        // Set up dummy auth listener that handles demo logout
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-          if (!session) {
-            localStorage.removeItem('smart_attendance_demo_session')
-            setSession(null)
-            setAppUser(null)
-            navigate('/login', { replace: true })
-          }
-        })
-        return () => subscription.unsubscribe()
+        return
       } catch {
         localStorage.removeItem('smart_attendance_demo_session')
       }
@@ -41,6 +32,7 @@ export default function App() {
 
     // Check for existing session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (localStorage.getItem('smart_attendance_demo_session')) return
       setSession(session)
       if (session) void loadUserRole(session)
       else setSession(null)
@@ -48,15 +40,7 @@ export default function App() {
 
     // Listen for auth state changes (login / logout / token refresh)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (localStorage.getItem('smart_attendance_demo_session')) {
-        if (!session) {
-          localStorage.removeItem('smart_attendance_demo_session')
-          setSession(null)
-          setAppUser(null)
-          navigate('/login', { replace: true })
-        }
-        return
-      }
+      if (localStorage.getItem('smart_attendance_demo_session')) return
       setSession(session)
       if (session) {
         void loadUserRole(session)

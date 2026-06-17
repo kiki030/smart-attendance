@@ -80,8 +80,8 @@ export default function StudentDashboard({ user }: Props) {
 
   async function handleLogout() {
     localStorage.removeItem('smart_attendance_demo_session')
-    await supabase.auth.signOut()
-    navigate('/login')
+    await supabase.auth.signOut().catch(() => {})
+    window.location.reload()
   }
 
   const statusConfig = {

@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import type { AppUser, AttendanceRecord } from '../types'
 import { STATUS_LABELS } from '../types'
@@ -17,7 +16,6 @@ const MOCK_RECORDS: AttendanceRecord[] = [
 ]
 
 export default function TeacherDashboard({ user }: Props) {
-  const navigate = useNavigate()
   const { apiBase, status: backendStatus } = useApiBase()
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -235,8 +233,8 @@ export default function TeacherDashboard({ user }: Props) {
 
   async function handleLogout() {
     localStorage.removeItem('smart_attendance_demo_session')
-    await supabase.auth.signOut()
-    navigate('/login')
+    await supabase.auth.signOut().catch(() => {})
+    window.location.reload()
   }
 
   // ── 手動上傳照片進行 AI 多人點名 ─────────────────────────────
