@@ -138,12 +138,11 @@ export default function RoleSetup({ session, onSetup }: Props) {
               <input
                 className="setup-input"
                 type="password"
-                placeholder="請輸入教師驗證碼"
+                placeholder="請輸入教師驗證碼（如：STUST2024）"
                 value={teacherCode}
                 onChange={e => setTeacherCode(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleSubmit()}
               />
-              <p className="setup-hint">（驗證碼由系統管理員提供）</p>
             </div>
           )}
 
