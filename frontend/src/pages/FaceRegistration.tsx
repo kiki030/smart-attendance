@@ -106,6 +106,9 @@ export default function FaceRegistration({ user }: Props) {
       const response = await fetch(`${apiBase}/api/register-face`, {
         method: 'POST',
         body: formData,
+        headers: {
+          'ngrok-skip-browser-warning': 'true'
+        }
       })
 
       if (!response.ok) throw new Error(`伺服器錯誤：${response.status}`)

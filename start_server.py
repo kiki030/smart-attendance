@@ -12,12 +12,13 @@ import sys
 import time
 import subprocess
 import threading
+from typing import Optional
 
 # ─────────────────────────────────────────────────────────
 # CONFIGURATION: Paste your ngrok authtoken here after getting
 # it from https://dashboard.ngrok.com/get-started/your-authtoken
 # ─────────────────────────────────────────────────────────
-NGROK_AUTHTOKEN = ""   # <-- PASTE YOUR TOKEN HERE
+NGROK_AUTHTOKEN = "3FGKlExkPznHGN4eFMKydrmd6oy_5JfY7W7c241B26bhnGgwk"
 
 # ─────────────────────────────────────────────────────────
 
@@ -64,7 +65,7 @@ def start_uvicorn():
     print("      [OK] Backend ready.")
 
 
-def start_ngrok() -> str | None:
+def start_ngrok() -> Optional[str]:
     """Start ngrok tunnel and return the public HTTPS URL."""
     print("[2/3] Starting ngrok tunnel ...")
 
@@ -111,7 +112,29 @@ def update_supabase(url: str) -> bool:
         print("      [OK] Supabase updated! Frontend will auto-detect the backend URL.")
         return True
     except Exception as e:
-        print(f"      [ERROR] Supabase update failed: {e}")
+        err_str = str(e)
+        print(f"      [ERROR] Supabase update failed: {err_str}")
+        if "app_config" in err_str or "schema cache" in err_str:
+            print()
+            print("  *** app_config TABLE IS MISSING IN SUPABASE ***")
+            print("  Please do the following:")
+            print("  1. Go to your Supabase project: https://supabase.com/dashboard")
+            print("  2. Click 'SQL Editor' in the left sidebar")
+            print("  3. Paste and run the following SQL:")
+            print()
+            print("  ─────────────────────────────────────────────────────────────")
+            print("  CREATE TABLE IF NOT EXISTS app_config (")
+            print("    key         TEXT        PRIMARY KEY,")
+            print("    value       TEXT        NOT NULL,")
+            print("    updated_at  TIMESTAMPTZ DEFAULT NOW()")
+            print("  );")
+            print("  ALTER TABLE app_config ENABLE ROW LEVEL SECURITY;")
+            print("  CREATE POLICY \"allow_all_app_config\"")
+            print("    ON app_config FOR ALL USING (true) WITH CHECK (true);")
+            print("  ─────────────────────────────────────────────────────────────")
+            print()
+            print(f"  After creating the table, re-run start.bat.")
+            print(f"  (Your backend is still running at http://127.0.0.1:8000)")
         return False
 
 

@@ -49,7 +49,12 @@ export function useApiBase(): UseApiBaseResult {
     try {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS)
-      const resp = await fetch(`${apiBase}/health`, { signal: controller.signal })
+      const resp = await fetch(`${apiBase}/health`, {
+        signal: controller.signal,
+        headers: {
+          'ngrok-skip-browser-warning': 'true'
+        }
+      })
       clearTimeout(timer)
       setStatus(resp.ok ? 'online' : 'offline')
     } catch {

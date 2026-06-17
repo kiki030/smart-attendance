@@ -20,12 +20,20 @@ export default function TeacherDashboard({ user }: Props) {
   const navigate = useNavigate()
   const { apiBase, status: backendStatus } = useApiBase()
   const videoRef = useRef<HTMLVideoElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [rollCallActive, setRollCallActive] = useState(false)
   const [records, setRecords] = useState<AttendanceRecord[]>([])
   const [savedRows, setSavedRows] = useState<Set<string>>(new Set())
   const [time, setTime] = useState(new Date())
   const [camError, setCamError] = useState('')
+  const [rollCallResult, setRollCallResult] = useState<{
+    total_detected: number
+    identified_count: number
+    unknown_count: number
+    results: Array<{ student_id: string; name: string; similarity: number; status: string }>
+  } | null>(null)
+  const [manualUploading, setManualUploading] = useState(false)
 
   // Live clock
   useEffect(() => {
@@ -115,6 +123,9 @@ export default function TeacherDashboard({ user }: Props) {
             const res = await fetch(`${apiBase}/api/roll-call`, {
               method: 'POST',
               body: formData,
+              headers: {
+                'ngrok-skip-browser-warning': 'true'
+              }
             })
             if (res.ok) {
               const data = await res.json()
@@ -227,6 +238,41 @@ export default function TeacherDashboard({ user }: Props) {
     navigate('/login')
   }
 
+  // ── 手動上傳照片進行 AI 多人點名 ─────────────────────────────
+  async function manualRollCall(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (backendStatus !== 'online') {
+      alert('AI 後端尚未連線，請先啟動 start.bat 並確認狀態燈號為綠色。')
+      return
+    }
+    setManualUploading(true)
+    setRollCallResult(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch(`${apiBase}/api/roll-call`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'ngrok-skip-browser-warning': 'true'
+        }
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setRollCallResult(data)
+      if (data.identified_count > 0) {
+        loadRosterAndAttendance()
+      }
+    } catch (err) {
+      alert(`辨識失敗：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setManualUploading(false)
+      // Reset file input so the same file can be re-selected
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
   const present = records.filter(r => r.status === 'present').length
   const late = records.filter(r => r.status === 'late').length
   const absent = records.filter(r => ['absent', 'excused_sick', 'excused_personal'].includes(r.status)).length
@@ -333,6 +379,97 @@ export default function TeacherDashboard({ user }: Props) {
               </div>
             )}
           </div>
+        </div>
+
+        {/* ── 手動上傳點名區塊 ── */}
+        <div className="cam-section" style={{ marginTop: '1.5rem' }}>
+          <div className="cam-header">
+            <h2 className="section-title-lg">📁 上傳照片 AI 點名</h2>
+            <span style={{ color: '#94a3b8', fontSize: '0.85rem' }}>拍攝課堂全景後上傳，系統自動辨識所有學生</span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', marginTop: '1rem', flexWrap: 'wrap' }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={manualRollCall}
+              style={{ display: 'none' }}
+              id="manual-upload-input"
+            />
+            <label
+              htmlFor="manual-upload-input"
+              className={`roll-call-btn ${backendStatus === 'online' ? 'roll-active' : 'roll-inactive'}`}
+              style={{ cursor: backendStatus === 'online' ? 'pointer' : 'not-allowed', opacity: backendStatus === 'online' ? 1 : 0.6 }}
+            >
+              {manualUploading ? '⏳ AI 辨識中...' : '📸 選擇/拍攝照片送出辨識'}
+            </label>
+            <span style={{ color: '#64748b', fontSize: '0.8rem' }}>
+              {backendStatus === 'online' ? '🟢 AI 後端在線，可上傳' : backendStatus === 'checking' ? '🟡 連線檢測中...' : '🔴 AI 後端離線，請啟動 start.bat'}
+            </span>
+          </div>
+
+          {/* AI 辨識結果卡片 */}
+          {rollCallResult && (
+            <div style={{ marginTop: '1.5rem' }}>
+              {/* 統計摘要列 */}
+              <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.2rem' }}>
+                <div className="stat-card" style={{ flex: '1', minWidth: '130px', background: 'rgba(99,102,241,0.12)', borderColor: '#6366f1' }}>
+                  <div className="stat-number" style={{ color: '#818cf8' }}>{rollCallResult.total_detected}</div>
+                  <div className="stat-label">🔍 偵測到人臉</div>
+                </div>
+                <div className="stat-card stat-present" style={{ flex: '1', minWidth: '130px' }}>
+                  <div className="stat-number">{rollCallResult.identified_count}</div>
+                  <div className="stat-label">✅ 辨識成功</div>
+                </div>
+                <div className="stat-card stat-absent" style={{ flex: '1', minWidth: '130px' }}>
+                  <div className="stat-number">{rollCallResult.unknown_count}</div>
+                  <div className="stat-label">⚠️ 未知人臉</div>
+                </div>
+              </div>
+
+              {/* 逐臉詳細結果 */}
+              {rollCallResult.results.length > 0 && (
+                <div className="table-wrapper">
+                  <table className="att-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>學號</th>
+                        <th>姓名</th>
+                        <th>相似度</th>
+                        <th>狀態</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rollCallResult.results.map((r, i) => (
+                        <tr key={i} style={{ opacity: r.status === 'unknown_alert' ? 0.7 : 1 }}>
+                          <td style={{ color: '#64748b' }}>{i + 1}</td>
+                          <td className="td-id">{r.status === 'unknown_alert' ? '—' : r.student_id}</td>
+                          <td className="td-name">{r.status === 'unknown_alert' ? 'Unknown' : r.name}</td>
+                          <td>
+                            <span style={{
+                              fontWeight: 700,
+                              color: r.similarity >= 0.7 ? '#4ade80' : '#f87171',
+                            }}>
+                              {(r.similarity * 100).toFixed(1)}%
+                            </span>
+                          </td>
+                          <td>
+                            {r.status === 'present'
+                              ? <span className="saved-badge" style={{ background: 'rgba(74,222,128,0.18)', color: '#4ade80' }}>✅ 出席</span>
+                              : <span className="saved-badge" style={{ background: 'rgba(248,113,113,0.18)', color: '#f87171' }}>⚠️ 未知警報</span>
+                            }
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 出勤紀錄 Table */}
