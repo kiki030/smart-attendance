@@ -81,7 +81,6 @@ export default function RoleSetup({ session, onSetup }: Props) {
               {session.user.email?.startsWith('demo_') ? (
                 <>
                   <p className="setup-hello">🚀 歡迎進入測試模式！</p>
-                  <p className="setup-email" style={{ opacity: 0.7 }}>您的隨機測試帳號：{session.user.email}</p>
                 </>
               ) : (
                 <>
