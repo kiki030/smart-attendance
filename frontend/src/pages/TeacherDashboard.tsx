@@ -32,6 +32,13 @@ export default function TeacherDashboard({ user }: Props) {
     results: Array<{ student_id: string; name: string; similarity: number; status: string }>
   } | null>(null)
   const [manualUploading, setManualUploading] = useState(false)
+  const [liveRollCallResult, setLiveRollCallResult] = useState<{
+    total_detected: number
+    identified_count: number
+    unknown_count: number
+    results: Array<{ student_id: string; name: string; similarity: number; status: string }>
+  } | null>(null)
+  const [liveChecking, setLiveChecking] = useState(false)
 
   // Live clock
   useEffect(() => {
@@ -95,6 +102,16 @@ export default function TeacherDashboard({ user }: Props) {
     return () => clearInterval(interval)
   }, [loadRosterAndAttendance])
 
+  // ── 當 rollCallActive 為 true 且 stream 存在時，將其綁定至 video 元素 ──
+  useEffect(() => {
+    if (rollCallActive && stream && videoRef.current) {
+      videoRef.current.srcObject = stream
+      videoRef.current.play().catch((err) => {
+        console.error("Video play failed:", err)
+      })
+    }
+  }, [rollCallActive, stream])
+
   // ── 定期抓取 WebCam 畫面並送至 AI 後端進行多人點名 ─────────────────
   useEffect(() => {
     if (!rollCallActive || backendStatus !== 'online') return
@@ -118,6 +135,7 @@ export default function TeacherDashboard({ user }: Props) {
           formData.append('file', file)
 
           try {
+            setLiveChecking(true)
             const res = await fetch(`${apiBase}/api/roll-call`, {
               method: 'POST',
               body: formData,
@@ -125,15 +143,18 @@ export default function TeacherDashboard({ user }: Props) {
                 'ngrok-skip-browser-warning': 'true'
               }
             })
+            setLiveChecking(false)
             if (res.ok) {
               const data = await res.json()
               console.log('AI Roll Call Result:', data)
+              setLiveRollCallResult(data)
               // 若有成功識別出任何人，立即重新載入出勤資料
               if (data.identified_count > 0) {
                 loadRosterAndAttendance()
               }
             }
           } catch (e) {
+            setLiveChecking(false)
             console.error('Failed to send frame to AI roll call:', e)
           }
         }, 'image/jpeg', 0.8)
@@ -142,7 +163,10 @@ export default function TeacherDashboard({ user }: Props) {
       }
     }, 3000) // 每 3 秒比對一次
 
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      setLiveChecking(false)
+    }
   }, [rollCallActive, backendStatus, apiBase, loadRosterAndAttendance])
 
   const startWebcam = useCallback(async () => {
@@ -163,6 +187,8 @@ export default function TeacherDashboard({ user }: Props) {
     stream?.getTracks().forEach(t => t.stop())
     setStream(null)
     if (videoRef.current) videoRef.current.srcObject = null
+    setLiveRollCallResult(null)
+    setLiveChecking(false)
   }, [stream])
 
   function toggleRollCall() {
@@ -378,6 +404,58 @@ export default function TeacherDashboard({ user }: Props) {
               </div>
             )}
           </div>
+
+          {/* 即時比對狀態面板 */}
+          {rollCallActive && (
+            <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '12px', border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.8rem' }}>
+                <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>🤖 AI 即時比對狀態</span>
+                <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                  {liveChecking ? '⏳ 正在掃描比對...' : '🟢 監控中 (每 3 秒比對)'}
+                </span>
+              </div>
+              
+              {liveRollCallResult ? (
+                <div>
+                  <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.8rem', fontSize: '0.8rem' }}>
+                    <div style={{ background: 'rgba(99,102,241,0.15)', padding: '0.25rem 0.6rem', borderRadius: '6px' }}>
+                      🔍 偵測人臉: {liveRollCallResult.total_detected}
+                    </div>
+                    <div style={{ background: 'rgba(74,222,128,0.15)', padding: '0.25rem 0.6rem', borderRadius: '6px', color: '#4ade80' }}>
+                      ✅ 成功辨識: {liveRollCallResult.identified_count}
+                    </div>
+                    <div style={{ background: 'rgba(248,113,113,0.15)', padding: '0.25rem 0.6rem', borderRadius: '6px', color: '#f87171' }}>
+                      ⚠️ 未知人臉: {liveRollCallResult.unknown_count}
+                    </div>
+                  </div>
+
+                  {liveRollCallResult.results.length > 0 ? (
+                    <div style={{ maxHeight: '150px', overflowY: 'auto', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '8px' }}>
+                      <table className="att-table" style={{ fontSize: '0.8rem', margin: 0 }}>
+                        <tbody>
+                          {liveRollCallResult.results.map((r, i) => (
+                            <tr key={i}>
+                              <td style={{ padding: '0.4rem' }}>{r.status === 'unknown_alert' ? '❓ 未註冊未知人臉' : `${r.student_id} ${r.name}`}</td>
+                              <td style={{ padding: '0.4rem', textAlign: 'right', fontWeight: 'bold', color: r.similarity >= 0.7 ? '#4ade80' : '#f87171' }}>
+                                {(r.similarity * 100).toFixed(0)}% 相似度
+                              </td>
+                              <td style={{ padding: '0.4rem', textAlign: 'right' }}>
+                                {r.status === 'present' ? '🟢 已出席' : '🔴 警報'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p style={{ fontSize: '0.8rem', color: '#64748b', margin: 0 }}>目前畫面中沒有人臉</p>
+                  )}
+                </div>
+              ) : (
+                <p style={{ fontSize: '0.8rem', color: '#64748b', margin: 0 }}>等待首輪比對結果中...</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ── 手動上傳點名區塊 ── */}
