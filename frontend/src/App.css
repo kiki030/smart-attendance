@@ -938,6 +938,75 @@ body {
   letter-spacing: 0.03em;
 }
 
+/* ── 學生姓名可點擊按鈕 ── */
+.student-name-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline dotted rgba(148,163,184,0.5);
+  text-underline-offset: 3px;
+  transition: color 0.15s;
+}
+.student-name-btn:hover { color: #a5b4fc; text-decoration-color: #a5b4fc; }
+
+/* ── Modal 背景遮罩 ── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+/* ── Modal 本體 ── */
+.modal-box {
+  background: #0f172a;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 20px;
+  padding: 1.6rem;
+  width: 100%;
+  max-width: 680px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+  animation: modalIn 0.2s ease;
+}
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 1.2rem;
+}
+.modal-title { margin: 0; font-size: 1.15rem; font-weight: 700; color: var(--text); }
+.modal-subtitle { margin: 0.2rem 0 0; font-size: 0.8rem; color: #64748b; }
+
+.modal-close-btn {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  color: #94a3b8;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0.3rem 0.6rem;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+.modal-close-btn:hover { background: rgba(248,113,113,0.15); color: #f87171; }
+
 /* Status chips (student table) */
 .status-chip {
   display: inline-block;

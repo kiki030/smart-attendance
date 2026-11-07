@@ -3,12 +3,33 @@ import { supabase } from '../lib/supabase'
 import type { AppUser, AttendanceRecord } from '../types'
 import { STATUS_LABELS } from '../types'
 import { useApiBase } from '../hooks/useApiBase'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} from 'recharts'
 import '../App.css'
 
 // Draft state shape per record
 interface DraftEntry {
   status: AttendanceRecord['status']
   note: string
+}
+
+// 趨勢圖資料點
+interface TrendPoint {
+  date: string
+  出席: number
+  遲到: number
+  缺席: number
+}
+
+// 學生歷史紀錄（彈窗用）
+interface StudentHistoryRecord {
+  id: string
+  date: string
+  course_name: string
+  status: string
+  check_in_time?: string
+  note?: string
 }
 
 interface Props { user: AppUser }
@@ -69,6 +90,15 @@ export default function TeacherDashboard({ user }: Props) {
   const [savingRows, setSavingRows] = useState<Set<string>>(new Set())
   const [savedRows, setSavedRows] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState('')
+
+  // ── 趨勢圖資料 ────────────────────────────────────────
+  const [trendData, setTrendData] = useState<TrendPoint[]>([])
+  const [trendLoading, setTrendLoading] = useState(false)
+
+  // ── 學生個人明細彈窗 ──────────────────────────────────
+  const [modalStudent, setModalStudent] = useState<{ id: string; name: string } | null>(null)
+  const [studentHistory, setStudentHistory] = useState<StudentHistoryRecord[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   // Keep draftsRef in sync so loadRosterAndAttendance can read latest drafts without stale closure
   useEffect(() => { draftsRef.current = drafts }, [drafts])
@@ -309,6 +339,102 @@ export default function TeacherDashboard({ user }: Props) {
     }
   }
 
+  // ── 載入近 14 天全班出勤趨勢資料 ────────────────────────
+  const loadTrendData = useCallback(async () => {
+    setTrendLoading(true)
+    try {
+      const end = new Date()
+      const start = new Date()
+      start.setDate(end.getDate() - 13)
+      const startStr = start.toISOString().slice(0, 10)
+      const endStr = end.toISOString().slice(0, 10)
+
+      const { data, error } = await supabase
+        .from('attendance_records')
+        .select('date, status')
+        .eq('course_name', selectedCourse)
+        .gte('date', startStr)
+        .lte('date', endStr)
+        .order('date', { ascending: true })
+
+      if (error) throw error
+
+      // 建立日期→統計 Map，預先填充 14 天（確保無資料日仍顯示）
+      const dateMap: Record<string, { 出席: number; 遲到: number; 缺席: number }> = {}
+      for (let i = 0; i < 14; i++) {
+        const d = new Date(start)
+        d.setDate(start.getDate() + i)
+        const key = d.toISOString().slice(0, 10)
+        dateMap[key] = { 出席: 0, 遲到: 0, 缺席: 0 }
+      }
+      for (const row of data || []) {
+        if (!dateMap[row.date]) continue
+        if (row.status === 'present') dateMap[row.date].出席++
+        else if (row.status === 'late') dateMap[row.date].遲到++
+        else dateMap[row.date].缺席++
+      }
+
+      setTrendData(
+        Object.entries(dateMap).map(([date, counts]) => ({
+          date: date.slice(5), // 顯示 MM-DD
+          ...counts,
+        }))
+      )
+    } catch (err) {
+      console.error('loadTrendData error:', err)
+    } finally {
+      setTrendLoading(false)
+    }
+  }, [selectedCourse])
+
+  useEffect(() => { loadTrendData() }, [loadTrendData])
+
+  // ── 開啟學生個人明細彈窗 ──────────────────────────────
+  async function openStudentModal(studentId: string, studentName: string) {
+    setModalStudent({ id: studentId, name: studentName })
+    setHistoryLoading(true)
+    setStudentHistory([])
+    try {
+      const { data, error } = await supabase
+        .from('attendance_records')
+        .select('id, date, course_name, status, check_in_time, note')
+        .eq('student_id', studentId)
+        .order('date', { ascending: false })
+        .limit(60)
+      if (error) throw error
+      setStudentHistory(data || [])
+    } catch (err) {
+      console.error('openStudentModal error:', err)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  // ── CSV 匯出 ──────────────────────────────────────────
+  function exportCSV() {
+    const BOM = '\uFEFF' // UTF-8 BOM，讓 Excel 正確顯示中文
+    const headers = ['學號', '姓名', '課程', '日期', '簽到時間', '狀態', '備註']
+    const rows = records.map(r => [
+      r.student_id,
+      r.student_name,
+      r.course_name,
+      r.date,
+      r.check_in_time ? new Date(r.check_in_time).toLocaleTimeString('zh-TW', { hour12: false }) : '',
+      STATUS_LABELS[r.status] ?? r.status,
+      r.note ?? '',
+    ])
+    const csv = BOM + [headers, ...rows].map(row =>
+      row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
+    ).join('\r\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `出勤報表_${selectedCourse}_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   async function handleLogout() {
     localStorage.removeItem('smart_attendance_demo_session')
     await supabase.auth.signOut().catch(() => {})
@@ -448,6 +574,33 @@ export default function TeacherDashboard({ user }: Props) {
             <div className="stat-number">{records.length}</div>
             <div className="stat-label">👥 總人數</div>
           </div>
+        </div>
+
+        {/* ── 全班出勤趨勢圖（近 14 天） ── */}
+        <div className="cam-section" style={{ marginBottom: '1.5rem' }}>
+          <h2 className="section-title-lg">📊 全班出勤趨勢（近 14 天 · {selectedCourse}）</h2>
+          {trendLoading ? (
+            <p style={{ color: '#64748b', fontSize: '0.85rem', marginTop: '1rem' }}>⏳ 載入趨勢資料中...</p>
+          ) : (
+            <div style={{ marginTop: '1rem', width: '100%', height: 240 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={trendData} margin={{ top: 4, right: 16, left: -10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                  <XAxis dataKey="date" tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                  <YAxis allowDecimals={false} tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{ background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 12 }}
+                    labelStyle={{ color: '#e2e8f0', marginBottom: 4 }}
+                    cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                  />
+                  <Legend wrapperStyle={{ fontSize: 12, color: '#94a3b8', paddingTop: 8 }} />
+                  <Bar dataKey="出席" stackId="a" fill="#4ade80" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="遲到" stackId="a" fill="#fbbf24" radius={[0, 0, 0, 0]} />
+                  <Bar dataKey="缺席" stackId="a" fill="#f87171" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
 
         {/* 即時鏡頭點名 */}
@@ -629,8 +782,17 @@ export default function TeacherDashboard({ user }: Props) {
 
         {/* 出勤紀錄管理（草稿暫存，確認後儲存） */}
         <div className="table-section">
-          <h2 className="section-title-lg">出勤紀錄管理</h2>
-          <p className="table-hint">修改狀態或備註後，點擊「確認儲存」寫入雲端</p>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.8rem', marginBottom: '0.4rem' }}>
+            <h2 className="section-title-lg" style={{ margin: 0 }}>出勤紀錄管理</h2>
+            <button
+              className="save-row-btn"
+              onClick={exportCSV}
+              style={{ background: 'rgba(99,102,241,0.14)', borderColor: 'rgba(99,102,241,0.4)', color: '#a5b4fc', fontSize: '0.82rem', padding: '0.45rem 1rem' }}
+            >
+              📥 匯出 CSV 報表
+            </button>
+          </div>
+          <p className="table-hint">修改狀態或備註後，點擊「確認儲存」寫入雲端；點擊姓名可查看個人明細</p>
 
           {/* Toast 提示 */}
           {toast && (
@@ -671,7 +833,15 @@ export default function TeacherDashboard({ user }: Props) {
                   return (
                     <tr key={rec.id} className={saved ? 'row-saved' : ''}>
                       <td className="td-id">{rec.student_id}</td>
-                      <td className="td-name">{rec.student_name}</td>
+                      <td className="td-name">
+                        <button
+                          className="student-name-btn"
+                          onClick={() => openStudentModal(rec.student_id, rec.student_name ?? '')}
+                          title="點擊查看個人明細"
+                        >
+                          {rec.student_name}
+                        </button>
+                      </td>
                       <td className="td-course">{rec.course_name}</td>
                       <td>
                         <select
@@ -716,6 +886,91 @@ export default function TeacherDashboard({ user }: Props) {
           </div>
         </div>
       </div>
+
+      {/* ── 學生個人明細 Modal ── */}
+      {modalStudent && (
+        <div
+          className="modal-backdrop"
+          onClick={e => { if (e.target === e.currentTarget) setModalStudent(null) }}
+        >
+          <div className="modal-box">
+            {/* Modal Header */}
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">👤 {modalStudent.name}</h3>
+                <p className="modal-subtitle">個人出勤明細</p>
+              </div>
+              <button className="modal-close-btn" onClick={() => setModalStudent(null)}>✕</button>
+            </div>
+
+            {historyLoading ? (
+              <p style={{ color: '#64748b', fontSize: '0.9rem', textAlign: 'center', padding: '2rem 0' }}>⏳ 載入中...</p>
+            ) : studentHistory.length === 0 ? (
+              <p style={{ color: '#64748b', fontSize: '0.9rem', textAlign: 'center', padding: '2rem 0' }}>目前沒有任何出勤紀錄</p>
+            ) : (() => {
+              const totalCount = studentHistory.length
+              const presentCount = studentHistory.filter(r => r.status === 'present').length
+              const lateCount = studentHistory.filter(r => r.status === 'late').length
+              const attendanceRate = totalCount > 0
+                ? (((presentCount + lateCount) / totalCount) * 100).toFixed(1)
+                : '0.0'
+              return (
+                <>
+                  {/* 個人統計卡片 */}
+                  <div style={{ display: 'flex', gap: '0.8rem', flexWrap: 'wrap', marginBottom: '1.2rem' }}>
+                    {[
+                      { label: '總次數', value: totalCount, color: '#94a3b8' },
+                      { label: '✅ 出席', value: presentCount, color: '#4ade80' },
+                      { label: '🟡 遲到', value: lateCount, color: '#fbbf24' },
+                      { label: '❌ 缺席', value: totalCount - presentCount - lateCount, color: '#f87171' },
+                      { label: '📈 出席率', value: `${attendanceRate}%`, color: Number(attendanceRate) >= 80 ? '#4ade80' : '#f87171' },
+                    ].map(({ label, value, color }) => (
+                      <div key={label} style={{ flex: '1', minWidth: '80px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '10px', padding: '0.6rem 0.8rem', textAlign: 'center' }}>
+                        <div style={{ fontSize: '1.2rem', fontWeight: 700, color }}>{value}</div>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '2px' }}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* 歷史紀錄表格 */}
+                  <div style={{ maxHeight: '340px', overflowY: 'auto' }}>
+                    <table className="att-table" style={{ fontSize: '0.82rem' }}>
+                      <thead>
+                        <tr>
+                          <th>日期</th>
+                          <th>課程</th>
+                          <th>簽到時間</th>
+                          <th>狀態</th>
+                          <th>備註</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {studentHistory.map(h => (
+                          <tr key={h.id}>
+                            <td className="td-id">{h.date}</td>
+                            <td className="td-course" style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.course_name}</td>
+                            <td style={{ color: '#94a3b8' }}>
+                              {h.check_in_time
+                                ? new Date(h.check_in_time).toLocaleTimeString('zh-TW', { hour12: false })
+                                : '—'}
+                            </td>
+                            <td>
+                              <span className={`status-chip chip-${h.status}`}>
+                                {STATUS_LABELS[h.status as AttendanceRecord['status']] ?? h.status}
+                              </span>
+                            </td>
+                            <td style={{ color: '#64748b' }}>{h.note || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
