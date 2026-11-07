@@ -9,7 +9,8 @@ interface Props {
   onSetup: (user: AppUser) => void
 }
 
-const TEACHER_CODE = 'STUST2024'
+// 教師驗證碼從環境變數讀取，fallback 為 'STUST2024'（本地開發備援）
+const TEACHER_CODE = import.meta.env.VITE_TEACHER_CODE || 'STUST2024'
 
 export default function RoleSetup({ session, onSetup }: Props) {
   const [role, setRole] = useState<UserRoleType>('student')

@@ -18,7 +18,7 @@ from typing import Optional
 # CONFIGURATION: Paste your ngrok authtoken here after getting
 # it from https://dashboard.ngrok.com/get-started/your-authtoken
 # ─────────────────────────────────────────────────────────
-NGROK_AUTHTOKEN = "3FGKlExkPznHGN4eFMKydrmd6oy_5JfY7W7c241B26bhnGgwk"
+NGROK_AUTHTOKEN = os.getenv("NGROK_AUTHTOKEN", "")
 
 # ─────────────────────────────────────────────────────────
 
