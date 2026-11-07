@@ -14,14 +14,6 @@ import subprocess
 import threading
 from typing import Optional
 
-# ─────────────────────────────────────────────────────────
-# CONFIGURATION: Paste your ngrok authtoken here after getting
-# it from https://dashboard.ngrok.com/get-started/your-authtoken
-# ─────────────────────────────────────────────────────────
-NGROK_AUTHTOKEN = os.getenv("NGROK_AUTHTOKEN", "")
-
-# ─────────────────────────────────────────────────────────
-
 try:
     from pyngrok import ngrok, conf
     from supabase import create_client
@@ -32,8 +24,10 @@ except ImportError as e:
     print("[ERROR] Please run: python -m pip install pyngrok supabase python-dotenv requests")
     sys.exit(1)
 
+# ── 先載入 .env，再讀取所有環境變數 ──────────────────────
 load_dotenv()
 
+NGROK_AUTHTOKEN = os.getenv("NGROK_AUTHTOKEN", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 PORT = 8000
