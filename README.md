@@ -266,7 +266,6 @@ CREATE POLICY "allow_all_app_config" ON app_config FOR ALL USING (true) WITH CHE
 | 學生 | 吳凱崴 |
 | 學號 | 4B2G0037 |
 | 指導老師 | 陳定宏 教授 |
-| 學年度 | 2025–2026 |
 
 ---
 
