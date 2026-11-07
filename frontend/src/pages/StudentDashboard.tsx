@@ -24,8 +24,7 @@ export default function StudentDashboard({ user }: Props) {
   useEffect(() => {
     if (user.studentId) loadAttendance()
     else {
-      // Fallback mock data
-      setRecords(getMockRecords())
+      // 無學號：直接顯示空狀態，不填入假資料
       setLoading(false)
     }
   }, [user.studentId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -38,29 +37,14 @@ export default function StudentDashboard({ user }: Props) {
         .eq('student_id', user.studentId)
         .order('date', { ascending: false })
 
-      if (error || !data || data.length === 0) {
-        setRecords(getMockRecords())
-      } else {
-        setRecords(data as AttendanceRecord[])
-      }
+      if (error) throw error
+      // 空陣列也直接設定，不替換為假資料
+      setRecords((data ?? []) as AttendanceRecord[])
     } catch {
-      setRecords(getMockRecords())
+      setRecords([])
     } finally {
       setLoading(false)
     }
-  }
-
-  function getMockRecords(): AttendanceRecord[] {
-    const today = new Date().toISOString().slice(0, 10)
-    return [
-      { id: '1', student_id: user.studentId || '', date: today, status: 'present', course_name: '人工智慧概論' },
-      { id: '2', student_id: user.studentId || '', date: '2026-06-10', status: 'late', course_name: '人工智慧概論' },
-      { id: '3', student_id: user.studentId || '', date: '2026-06-03', status: 'absent', course_name: '人工智慧概論' },
-      { id: '4', student_id: user.studentId || '', date: '2026-05-27', status: 'present', course_name: '人工智慧概論' },
-      { id: '5', student_id: user.studentId || '', date: '2026-05-20', status: 'present', course_name: '人工智慧概論' },
-      { id: '6', student_id: user.studentId || '', date: '2026-05-13', status: 'excused_sick', course_name: '人工智慧概論' },
-      { id: '7', student_id: user.studentId || '', date: '2026-05-06', status: 'present', course_name: '人工智慧概論' },
-    ]
   }
 
   const today = new Date().toISOString().slice(0, 10)
@@ -211,36 +195,55 @@ export default function StudentDashboard({ user }: Props) {
         {/* 歷史紀錄 */}
         <div className="table-section">
           <h2 className="section-title-lg">歷史出勤紀錄</h2>
-          <div className="table-wrapper">
-            <table className="att-table">
-              <thead>
-                <tr>
-                  <th>日期</th>
-                  <th>課程</th>
-                  <th>狀態</th>
-                  <th>備註</th>
-                </tr>
-              </thead>
-              <tbody>
-                {records.slice(0, 10).map(rec => (
-                  <tr key={rec.id}>
-                    <td>{rec.date}</td>
-                    <td>{rec.course_name || '人工智慧概論'}</td>
-                    <td>
-                      <span className={`status-chip chip-${rec.status}`}>
-                        {rec.status === 'present' && '✅ 出席'}
-                        {rec.status === 'late' && '🟡 遲到'}
-                        {rec.status === 'absent' && '❌ 缺席'}
-                        {rec.status === 'excused_sick' && '💊 病假'}
-                        {rec.status === 'excused_personal' && '📋 事假'}
-                      </span>
-                    </td>
-                    <td className="td-note">{rec.note || '—'}</td>
+          {!loading && records.length === 0 ? (
+            /* 空狀態提示 */
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '3rem 1rem',
+              color: '#475569',
+              gap: '0.6rem',
+            }}>
+              <div style={{ fontSize: '2.5rem' }}>📋</div>
+              <div style={{ fontSize: '1rem', fontWeight: 600, color: '#64748b' }}>目前尚無出勤紀錄</div>
+              <div style={{ fontSize: '0.82rem', color: '#475569', textAlign: 'center' }}>
+                完成人臉註冊後，待教師進行 AI 點名，紀錄將自動出現在此。
+              </div>
+            </div>
+          ) : (
+            <div className="table-wrapper">
+              <table className="att-table">
+                <thead>
+                  <tr>
+                    <th>日期</th>
+                    <th>課程</th>
+                    <th>狀態</th>
+                    <th>備註</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {records.slice(0, 10).map(rec => (
+                    <tr key={rec.id}>
+                      <td>{rec.date}</td>
+                      <td>{rec.course_name || '人工智慧概論'}</td>
+                      <td>
+                        <span className={`status-chip chip-${rec.status}`}>
+                          {rec.status === 'present' && '✅ 出席'}
+                          {rec.status === 'late' && '🟡 遲到'}
+                          {rec.status === 'absent' && '❌ 缺席'}
+                          {rec.status === 'excused_sick' && '💊 病假'}
+                          {rec.status === 'excused_personal' && '📋 事假'}
+                        </span>
+                      </td>
+                      <td className="td-note">{rec.note || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
     </div>

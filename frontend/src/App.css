@@ -1409,3 +1409,10 @@ body {
   .login-card { padding: 2rem 1.5rem; }
   .cam-header { flex-direction: column; align-items: flex-start; }
 }
+
+/* 下拉選單展開後的選項：白底黑字（主選單按鈕仍維持深色外觀） */
+select option,
+.status-select option {
+  background-color: #ffffff;
+  color: #000000;
+}
