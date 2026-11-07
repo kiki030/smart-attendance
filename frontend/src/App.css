@@ -1416,3 +1416,289 @@ select option,
   background-color: #ffffff;
   color: #000000;
 }
+
+
+/* ═══════════════════════════════════════════════════════════════
+   課表同步 & 依節次請假與審核 (v0.5.0)
+═══════════════════════════════════════════════════════════════ */
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.sync-schedule-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.48rem 0.95rem;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.22), rgba(139, 92, 246, 0.18));
+  border: 1px solid rgba(129, 140, 248, 0.45);
+  border-radius: 10px;
+  color: #c7d2fe;
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+.sync-schedule-btn:hover {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.34), rgba(139, 92, 246, 0.28));
+  border-color: rgba(165, 180, 252, 0.7);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.sync-notice-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.9rem;
+  padding: 0.6rem 0.95rem;
+  background: rgba(74, 222, 128, 0.1);
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: 10px;
+  color: #86efac;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.empty-state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  margin-top: 1rem;
+  padding: 2.5rem 1rem;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+}
+
+/* 共用表單元件（同步彈窗 & 請假申請） */
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.form-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #94a3b8;
+}
+.form-input {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 0.88rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s, background 0.2s;
+}
+.form-input:focus {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.07);
+}
+.form-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.form-hint {
+  font-size: 0.74rem;
+  color: #94a3b8;
+  margin-top: 0.15rem;
+}
+.form-error {
+  padding: 0.6rem 0.9rem;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 10px;
+  color: #fca5a5;
+  font-size: 0.82rem;
+  font-weight: 500;
+}
+.form-success {
+  padding: 0.6rem 0.9rem;
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  border-radius: 10px;
+  color: #86efac;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.primary-btn {
+  padding: 0.72rem 1.25rem;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border: none;
+  border-radius: 12px;
+  color: #ffffff;
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+  transition: opacity 0.2s, transform 0.15s;
+}
+.primary-btn:hover:not(:disabled) {
+  opacity: 0.92;
+  transform: translateY(-1px);
+}
+.primary-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 週課表格 (ScheduleGrid) */
+.schedule-grid {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: separate;
+  border-spacing: 6px;
+  table-layout: fixed;
+}
+.schedule-grid th {
+  padding: 0.55rem 0.4rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #cbd5e1;
+  text-align: center;
+}
+.period-label {
+  padding: 0.55rem 0.35rem;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #94a3b8;
+  text-align: center;
+  white-space: nowrap;
+}
+.slot-empty {
+  height: 44px;
+  background: rgba(255, 255, 255, 0.015);
+  border: 1px dashed rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+.schedule-cell {
+  padding: 0.55rem 0.65rem;
+  background: linear-gradient(160deg, rgba(99, 102, 241, 0.2), rgba(59, 130, 246, 0.12));
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  border-radius: 10px;
+  vertical-align: middle;
+  text-align: center;
+}
+.schedule-cell-name {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #e0e7ff;
+  line-height: 1.35;
+}
+.schedule-cell-meta {
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  color: #a5b4fc;
+}
+.schedule-cell-code {
+  margin-top: 0.15rem;
+  font-size: 0.66rem;
+  color: #64748b;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* 學生請假表單排版 */
+.leave-form-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 0.9fr;
+  gap: 0.9rem;
+  margin-top: 1rem;
+  align-items: end;
+}
+.leave-reason-field {
+  grid-column: 1 / 3;
+}
+.leave-submit-wrap {
+  display: flex;
+  justify-content: flex-end;
+}
+.leave-submit-wrap .primary-btn {
+  width: 100%;
+}
+
+@media (max-width: 768px) {
+  .leave-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .leave-reason-field {
+    grid-column: auto;
+  }
+}
+
+/* 請假狀態徽章 & 教師審核按鈕 */
+.leave-status-pending {
+  background: rgba(251, 191, 36, 0.14);
+  color: #fbbf24;
+}
+.leave-status-approved {
+  background: rgba(74, 222, 128, 0.14);
+  color: #4ade80;
+}
+.leave-status-rejected {
+  background: rgba(248, 113, 113, 0.14);
+  color: #f87171;
+}
+
+.pending-count-badge {
+  display: inline-block;
+  padding: 0.2rem 0.65rem;
+  background: rgba(251, 191, 36, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: 999px;
+  color: #fbbf24;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.approve-btn,
+.reject-btn {
+  padding: 0.34rem 0.72rem;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.18s ease;
+}
+.approve-btn {
+  background: rgba(74, 222, 128, 0.14);
+  border: 1px solid rgba(74, 222, 128, 0.4);
+  color: #4ade80;
+}
+.approve-btn:hover:not(:disabled) {
+  background: rgba(74, 222, 128, 0.26);
+}
+.reject-btn {
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.38);
+  color: #f87171;
+}
+.reject-btn:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.24);
+}
+.approve-btn:disabled,
+.reject-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

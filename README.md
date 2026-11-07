@@ -185,6 +185,7 @@ npm run deploy       # 自動 build + 推送至 gh-pages 分支
 | `GET` | `/` | 根路由狀態 |
 | `POST` | `/api/register-face` | 人臉特徵註冊（Online Feature Fusion） |
 | `POST` | `/api/roll-call` | 多人課堂點名辨識 + 出勤寫入 |
+| `POST` | `/api/sync-schedule` | 南台校務課表一鍵同步（雙模式：真實校務抓取 / 智慧示範備援，密碼不落盤） |
 | `POST` | `/api/search-face` | 單人人臉搜尋 |
 | `POST` | `/api/test-insert` | 測試向量寫入（開發用） |
 
@@ -253,6 +254,39 @@ CREATE TABLE IF NOT EXISTS app_config (
 );
 ALTER TABLE app_config ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "allow_all_app_config" ON app_config FOR ALL USING (true) WITH CHECK (true);
+
+-- 7. 使用者課表（南台校務課表同步，不儲存任何密碼）
+CREATE TABLE IF NOT EXISTS user_schedules (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     TEXT        NOT NULL,
+  role        TEXT        NOT NULL CHECK (role IN ('teacher', 'student')),
+  course_id   TEXT,
+  course_name TEXT        NOT NULL,
+  day_of_week INTEGER     NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
+  period      TEXT        NOT NULL,
+  room        TEXT,
+  updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE user_schedules ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "allow_all_user_schedules" ON user_schedules FOR ALL USING (true) WITH CHECK (true);
+
+-- 8. 學生請假申請與教師審核表
+CREATE TABLE IF NOT EXISTS leave_requests (
+  id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id   TEXT        NOT NULL,
+  student_name TEXT,
+  course_name  TEXT        NOT NULL,
+  leave_date   DATE        NOT NULL,
+  period       TEXT,
+  leave_type   TEXT        NOT NULL CHECK (leave_type IN ('excused_sick', 'excused_personal')),
+  reason       TEXT        NOT NULL,
+  status       TEXT        NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'approved', 'rejected')),
+  created_at   TIMESTAMPTZ DEFAULT NOW(),
+  reviewed_at  TIMESTAMPTZ
+);
+ALTER TABLE leave_requests ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "allow_all_leave_requests" ON leave_requests FOR ALL USING (true) WITH CHECK (true);
 ```
 
 ---

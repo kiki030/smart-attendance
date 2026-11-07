@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
-import type { AppUser, AttendanceRecord } from '../types'
-import { STATUS_LABELS } from '../types'
+import type {
+  AppUser, AttendanceRecord, LeaveRequest, ScheduleEntry, ScheduleSource, ScheduleSyncResult,
+} from '../types'
+import {
+  LEAVE_STATUS_LABELS, LEAVE_TYPE_LABELS, STATUS_LABELS, formatPeriod, parsePeriodRange,
+} from '../types'
 import { useApiBase } from '../hooks/useApiBase'
+import { errorMessage } from '../lib/utils'
+import ScheduleSyncModal from '../components/ScheduleSyncModal'
+import ScheduleGrid from '../components/ScheduleGrid'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts'
@@ -100,6 +107,18 @@ export default function TeacherDashboard({ user }: Props) {
   const [studentHistory, setStudentHistory] = useState<StudentHistoryRecord[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
 
+  // ── 授課課表同步 & 學生請假審核 ────────────────────────
+  const [teacherSchedule, setTeacherSchedule] = useState<ScheduleEntry[]>([])
+  const [syncOpen, setSyncOpen] = useState(false)
+  const [showScheduleGrid, setShowScheduleGrid] = useState(false)
+  const [syncNotice, setSyncNotice] = useState<{ source: ScheduleSource; message: string } | null>(null)
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([])
+  const [reviewingIds, setReviewingIds] = useState<Set<string>>(new Set())
+
+  // 優先使用教師已同步的授課清單；若尚未同步則退回預設課程清單
+  const syncedCourses = Array.from(new Set(teacherSchedule.map(s => s.course_name)))
+  const availableCourses = syncedCourses.length > 0 ? syncedCourses : COURSE_OPTIONS
+
   // Keep draftsRef in sync so loadRosterAndAttendance can read latest drafts without stale closure
   useEffect(() => { draftsRef.current = drafts }, [drafts])
 
@@ -130,6 +149,7 @@ export default function TeacherDashboard({ user }: Props) {
         .from('attendance_records')
         .select('*')
         .eq('date', todayStr)
+        .eq('course_name', selectedCourse)
 
       if (recordError) throw recordError
 
@@ -441,6 +461,122 @@ export default function TeacherDashboard({ user }: Props) {
     URL.revokeObjectURL(url)
   }
 
+  // ── 讀取教師已同步的授課課表 ────────────────────────────
+  const loadTeacherSchedule = useCallback(async () => {
+    if (!user.email) return
+    const { data, error } = await supabase
+      .from('user_schedules')
+      .select('*')
+      .eq('user_id', user.email)
+      .order('day_of_week', { ascending: true })
+    if (error) {
+      console.error('loadTeacherSchedule error:', error)
+      return
+    }
+    const sorted = ((data ?? []) as ScheduleEntry[]).sort(
+      (a, b) => a.day_of_week - b.day_of_week || parsePeriodRange(a.period).start - parsePeriodRange(b.period).start
+    )
+    setTeacherSchedule(sorted)
+    const names = Array.from(new Set(sorted.map(s => s.course_name)))
+    if (names.length > 0) {
+      setSelectedCourse(prev => (names.includes(prev) ? prev : names[0]))
+    }
+  }, [user.email])
+
+  useEffect(() => { loadTeacherSchedule() }, [loadTeacherSchedule])
+
+  // ── 讀取當前課程的學生請假申請 ──────────────────────────
+  const loadLeaveRequests = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('leave_requests')
+      .select('*')
+      .eq('course_name', selectedCourse)
+      .order('created_at', { ascending: false })
+      .limit(50)
+    if (error) {
+      console.error('loadLeaveRequests error:', error)
+      return
+    }
+    setLeaveRequests((data ?? []) as LeaveRequest[])
+  }, [selectedCourse])
+
+  useEffect(() => {
+    loadLeaveRequests()
+    const interval = setInterval(loadLeaveRequests, 10000)
+    return () => clearInterval(interval)
+  }, [loadLeaveRequests])
+
+  function handleTeacherSynced(result: ScheduleSyncResult) {
+    setSyncNotice({ source: result.source, message: `${result.message}（共 ${result.count} 門授課）` })
+    loadTeacherSchedule()
+  }
+
+  // ── 教師審核請假申請（核准時自動同步至 attendance_records）──
+  async function reviewLeave(req: LeaveRequest, decision: 'approved' | 'rejected') {
+    setReviewingIds(prev => new Set(prev).add(req.id))
+    const nowIso = new Date().toISOString()
+    const cleanName = req.student_name
+      ? (req.student_name.replace(req.student_id, '').trim() || req.student_name)
+      : req.student_id
+
+    try {
+      // 1. 更新 leave_requests 狀態
+      const { error: updateLeaveErr } = await supabase
+        .from('leave_requests')
+        .update({ status: decision, reviewed_at: nowIso })
+        .eq('id', req.id)
+      if (updateLeaveErr) throw updateLeaveErr
+
+      // 2. 若為「核准」，自動同步寫入 / 更新 attendance_records
+      if (decision === 'approved') {
+        const { data: existingAtt, error: findErr } = await supabase
+          .from('attendance_records')
+          .select('id')
+          .eq('student_id', req.student_id)
+          .eq('course_name', req.course_name)
+          .eq('date', req.leave_date)
+          .limit(1)
+        if (findErr) throw findErr
+
+        if (existingAtt && existingAtt.length > 0) {
+          const { error: attUpdErr } = await supabase
+            .from('attendance_records')
+            .update({
+              status: req.leave_type,
+              note: req.reason,
+              updated_at: nowIso,
+            })
+            .eq('id', existingAtt[0].id)
+          if (attUpdErr) throw attUpdErr
+        } else {
+          const { error: attInsErr } = await supabase
+            .from('attendance_records')
+            .insert({
+              student_id: req.student_id,
+              student_name: cleanName,
+              course_name: req.course_name,
+              date: req.leave_date,
+              status: req.leave_type,
+              note: req.reason,
+              updated_at: nowIso,
+            })
+          if (attInsErr) throw attInsErr
+        }
+
+        showToast(`✅ 已核准 ${cleanName} 的請假申請，並同步寫入出勤紀錄`)
+        await Promise.all([loadLeaveRequests(), loadRosterAndAttendance(), loadTrendData()])
+      } else {
+        showToast(`❌ 已駁回 ${cleanName} 的請假申請`)
+        await loadLeaveRequests()
+      }
+    } catch (err) {
+      console.error('reviewLeave error:', err)
+      showToast(`❌ 審核失敗：${errorMessage(err)}`)
+    } finally {
+      setReviewingIds(prev => { const n = new Set(prev); n.delete(req.id); return n })
+    }
+  }
+
   async function handleLogout() {
     localStorage.removeItem('smart_attendance_demo_session')
     await supabase.auth.signOut().catch(() => {})
@@ -513,6 +649,9 @@ export default function TeacherDashboard({ user }: Props) {
             <span className="nav-username">{user.name}</span>
             <span className="nav-role-badge teacher-badge">教師</span>
           </div>
+          <button className="sync-schedule-btn" onClick={() => setSyncOpen(true)}>
+            🔄 同步授課課表
+          </button>
           <button className="logout-btn" onClick={handleLogout}>登出</button>
         </div>
       </nav>
@@ -525,18 +664,54 @@ export default function TeacherDashboard({ user }: Props) {
 
         {/* ── 課程與上課時間設定面板 ── */}
         <div className="cam-section" style={{ marginBottom: '1.5rem' }}>
-          <h2 className="section-title-lg">⚙️ 課程設定</h2>
+          <div className="section-header-row">
+            <h2 className="section-title-lg" style={{ margin: 0 }}>⚙️ 課程設定</h2>
+            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+              {teacherSchedule.length > 0 && (
+                <button
+                  type="button"
+                  className="save-row-btn"
+                  onClick={() => setShowScheduleGrid(v => !v)}
+                  style={{ fontSize: '0.8rem', padding: '0.45rem 0.9rem' }}
+                >
+                  {showScheduleGrid ? '▲ 收合授課課表' : '📅 檢視授課課表'}
+                </button>
+              )}
+              <button
+                type="button"
+                className="sync-schedule-btn"
+                onClick={() => setSyncOpen(true)}
+              >
+                🔄 同步授課課表
+              </button>
+            </div>
+          </div>
+
+          {syncNotice && (
+            <div className="sync-notice-banner" style={{ marginTop: '0.85rem' }}>
+              <span>{syncNotice.source === 'stust' ? '🏫' : '✨'}</span>
+              <span>{syncNotice.message}</span>
+            </div>
+          )}
+
           <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginTop: '1rem', alignItems: 'flex-end' }}>
             {/* 課程選擇 */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-              <label style={{ fontSize: '0.82rem', color: '#94a3b8', fontWeight: 600 }}>📚 課程名稱</label>
+              <label style={{ fontSize: '0.82rem', color: '#94a3b8', fontWeight: 600 }}>
+                📚 課程名稱{' '}
+                {syncedCourses.length > 0 && (
+                  <span style={{ color: '#4ade80', fontWeight: 500, fontSize: '0.75rem' }}>
+                    (已連動同步授課清單)
+                  </span>
+                )}
+              </label>
               <select
                 value={selectedCourse}
                 onChange={e => setSelectedCourse(e.target.value)}
                 className="status-select"
                 style={{ minWidth: '180px', padding: '0.55rem 0.8rem', fontSize: '0.9rem' }}
               >
-                {COURSE_OPTIONS.map(c => (
+                {availableCourses.map(c => (
                   <option key={c} value={c}>{c}</option>
                 ))}
               </select>
@@ -560,6 +735,12 @@ export default function TeacherDashboard({ user }: Props) {
               <div>上課時間：<strong>{classStartTime || '未設定（不判斷遲到）'}</strong></div>
             </div>
           </div>
+
+          {showScheduleGrid && teacherSchedule.length > 0 && (
+            <div style={{ marginTop: '1.2rem' }}>
+              <ScheduleGrid entries={teacherSchedule} />
+            </div>
+          )}
         </div>
 
         {/* 統計卡片 */}
@@ -786,6 +967,104 @@ export default function TeacherDashboard({ user }: Props) {
           )}
         </div>
 
+        {/* ── 📋 學生請假審核 ── */}
+        <div className="table-section">
+          <div className="section-header-row" style={{ marginBottom: '0.4rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+              <h2 className="section-title-lg" style={{ margin: 0 }}>
+                📋 學生請假審核（{selectedCourse}）
+              </h2>
+              {leaveRequests.filter(l => l.status === 'pending').length > 0 && (
+                <span className="pending-count-badge">
+                  待審核 {leaveRequests.filter(l => l.status === 'pending').length} 筆
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="save-row-btn"
+              onClick={loadLeaveRequests}
+              style={{ fontSize: '0.78rem', padding: '0.4rem 0.85rem' }}
+            >
+              ↻ 重新整理
+            </button>
+          </div>
+          <p className="table-hint">核准請假後，系統將自動同步更新或新增該學生當日的請假出勤紀錄與事由備註</p>
+
+          {leaveRequests.length === 0 ? (
+            <div className="empty-state-box" style={{ padding: '2rem 1rem' }}>
+              <div style={{ fontSize: '2rem' }}>📭</div>
+              <div style={{ fontSize: '0.9rem', fontWeight: 600, color: '#64748b' }}>
+                「{selectedCourse}」目前沒有學生請假申請
+              </div>
+            </div>
+          ) : (
+            <div className="table-wrapper">
+              <table className="att-table">
+                <thead>
+                  <tr>
+                    <th>學號</th>
+                    <th>申請學生</th>
+                    <th>請假日期</th>
+                    <th>節次</th>
+                    <th>假別</th>
+                    <th>請假事由</th>
+                    <th>狀態 / 審核操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {leaveRequests.map(req => {
+                    const busy = reviewingIds.has(req.id)
+                    const cleanStudent = req.student_name
+                      ? (req.student_name.replace(req.student_id, '').trim() || req.student_name)
+                      : '—'
+                    return (
+                      <tr key={req.id}>
+                        <td className="td-id">{req.student_id}</td>
+                        <td className="td-name">{cleanStudent}</td>
+                        <td>{req.leave_date}</td>
+                        <td style={{ color: '#94a3b8' }}>{formatPeriod(req.period)}</td>
+                        <td>
+                          <span className={`status-chip chip-${req.leave_type}`}>
+                            {LEAVE_TYPE_LABELS[req.leave_type] ?? req.leave_type}
+                          </span>
+                        </td>
+                        <td className="td-note">{req.reason}</td>
+                        <td>
+                          {req.status === 'pending' ? (
+                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              <button
+                                type="button"
+                                className="approve-btn"
+                                disabled={busy}
+                                onClick={() => reviewLeave(req, 'approved')}
+                              >
+                                {busy ? '⏳' : '✅ 核准'}
+                              </button>
+                              <button
+                                type="button"
+                                className="reject-btn"
+                                disabled={busy}
+                                onClick={() => reviewLeave(req, 'rejected')}
+                              >
+                                {busy ? '⏳' : '❌ 駁回'}
+                              </button>
+                            </div>
+                          ) : (
+                            <span className={`status-chip leave-status-${req.status}`}>
+                              {LEAVE_STATUS_LABELS[req.status] ?? req.status}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
         {/* 出勤紀錄管理（草稿暫存，確認後儲存） */}
         <div className="table-section">
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.8rem', marginBottom: '0.4rem' }}>
@@ -976,6 +1255,19 @@ export default function TeacherDashboard({ user }: Props) {
             })()}
           </div>
         </div>
+      )}
+
+      {/* ── 南台校務授課課表同步 Modal ── */}
+      {syncOpen && (
+        <ScheduleSyncModal
+          role="teacher"
+          userId={user.email}
+          defaultAccount={user.email.split('@')[0] || user.email}
+          apiBase={apiBase}
+          backendStatus={backendStatus}
+          onClose={() => setSyncOpen(false)}
+          onSynced={handleTeacherSynced}
+        />
       )}
     </div>
   )

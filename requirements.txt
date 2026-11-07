@@ -7,3 +7,5 @@ opencv-python
 python-multipart
 insightface
 onnxruntime
+requests
+beautifulsoup4

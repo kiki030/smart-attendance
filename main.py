@@ -6,10 +6,16 @@ import cv2
 import datetime
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from insightface.app import FaceAnalysis
+from schedule_service import (
+    ScheduleFetchError,
+    fetch_stust_schedule,
+    generate_demo_schedule,
+    is_demo_password,
+)
 
 # ── 載入環境變數 ──────────────────────────────────────────────
 load_dotenv()
@@ -66,6 +72,13 @@ face_app.prepare(ctx_id=0, det_size=(640, 640))
 class StudentInsertRequest(BaseModel):
     student_id: str
     name: str
+
+
+class ScheduleSyncRequest(BaseModel):
+    account: str
+    password: SecretStr  # SecretStr：repr / log 時自動遮蔽為 '**********'
+    role: str = "student"
+    user_id: str
 
 
 # ── 人臉特徵提取函式（InsightFace 真實推論）───────────────────
@@ -521,3 +534,90 @@ async def roll_call(
             "status": "error",
             "message": str(e),
         }
+
+
+
+# ── 路由：南台校務課表一鍵同步 ────────────────────────────────
+@app.post("/api/sync-schedule")
+def sync_schedule(payload: ScheduleSyncRequest):
+    """
+    接收 { account, password, role, user_id }，取得本學期課表並寫入 Supabase user_schedules。
+
+    取得方式：
+      1. 密碼為測試碼（demo / test …）→ 直接產生示範課表
+      2. 否則嘗試 fetch_stust_schedule() 登入校務系統抓取
+      3. 若未設定端點、需要驗證碼、連線失敗或解析不到 → 改用示範課表
+
+    安全性：密碼只在本函式記憶體中短暫使用，不寫入資料庫、不印出 log、不回傳前端。
+    """
+    account = payload.account.strip()
+    user_id = payload.user_id.strip()
+    role = payload.role if payload.role in ("student", "teacher") else "student"
+
+    if not account or not user_id:
+        raise HTTPException(status_code=400, detail="帳號與使用者識別碼不可為空")
+
+    source = "demo"
+    notice = ""
+    entries: list[dict] = []
+
+    password = payload.password.get_secret_value()
+    try:
+        if is_demo_password(password):
+            notice = "偵測到測試密碼，已產生示範課表"
+        else:
+            entries = fetch_stust_schedule(account, password)
+            source = "stust"
+            notice = "已成功從南台校務系統同步課表"
+    except ScheduleFetchError as e:
+        notice = f"{e}，已改用示範課表"
+    except Exception as e:
+        # 只記錄例外類型，避免任何可能含帳密的內容進入 log
+        print(f"    ⚠️ 校務系統課表抓取發生未預期錯誤：{type(e).__name__}")
+        notice = "連線校務系統時發生未預期錯誤，已改用示範課表"
+    finally:
+        password = ""  # 用完立即清除區域變數
+
+    if source == "demo":
+        entries = generate_demo_schedule(account, role)
+
+    synced_at = datetime.datetime.now().astimezone().isoformat()
+    rows = [
+        {
+            "user_id": user_id,
+            "role": role,
+            "course_id": e.get("course_id"),
+            "course_name": e["course_name"],
+            "day_of_week": e["day_of_week"],
+            "period": e.get("period")
+            or (
+                str(e["period_start"])
+                if e["period_start"] == e["period_end"]
+                else f"{e['period_start']}-{e['period_end']}"
+            ),
+            "room": e.get("room") or e.get("classroom"),
+            "updated_at": synced_at,
+        }
+        for e in entries
+    ]
+
+    try:
+        # 先清除該使用者的舊課表，再批次寫入新課表
+        supabase.table("user_schedules").delete().eq("user_id", user_id).execute()
+        inserted = supabase.table("user_schedules").insert(rows).execute() if rows else None
+    except Exception as e_db:
+        print(f"    ⚠️ 寫入 user_schedules 失敗：{e_db}")
+        raise HTTPException(
+            status_code=500,
+            detail="課表寫入資料庫失敗，請確認 Supabase 已建立 user_schedules 資料表",
+        )
+
+    print(f"    📅 課表同步完成：user_id={user_id} role={role} source={source} 共 {len(rows)} 門")
+
+    return {
+        "status": "success",
+        "source": source,
+        "message": notice,
+        "count": len(rows),
+        "schedule": (inserted.data if inserted and inserted.data else rows),
+    }

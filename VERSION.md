@@ -1,6 +1,6 @@
 # 📋 VERSION — 校園智慧點名系統版本記錄
 
-> **目前穩定版本：`v0.4.5`**
+> **目前穩定版本：`v0.5.0`**
 
 ---
 
@@ -31,6 +31,24 @@ gh-pages（生產發布）← 由 Vite build 產物自動推送，請勿手動�
 ---
 
 ## 📅 Change Log（變更歷史）
+
+---
+
+### v0.5.0 — 2026-11-08
+**feat: 南台校務課表一鍵同步、依課表節次線上請假與教師審核連動功能上線**
+
+| 類型 | 變更內容 |
+|------|---------|
+| `feat` | `schedule_service.py` & `main.py`：新增 `POST /api/sync-schedule` 課表同步端點，支援 `requests.Session` + `BeautifulSoup` 校務課表解析（`fetch_stust_schedule`）與南台資工系智慧示範備援雙模式 |
+| `security` | 校務密碼以 `SecretStr` 接收且僅於記憶體內單次使用，執行完畢立即清除，絕不寫入資料庫、錯誤訊息或終端機 log |
+| `feat` | 同步課表時自動先清除該 `user_id` 於 Supabase `user_schedules` 的舊紀錄，再批次 INSERT 最新課表並回傳前端 |
+| `feat` | `ScheduleSyncModal.tsx` & `ScheduleGrid.tsx`：新增共用課表同步彈窗（含密碼不落地安全提示）與週一至週五節次合併（`rowSpan`）課表格元件 |
+| `feat` | `StudentDashboard.tsx`：新增「🔄 同步南台校務課表」按鈕、「📅 我的本學期課表」週課表區塊、「📝 線上請假申請」（依已同步課表下拉選取課程與節次、自動帶入下次上課日、防重複申請）與「請假申請進度列表」 |
+| `feat` | `TeacherDashboard.tsx`：新增「🔄 同步授課課表」按鈕，「課程設定」下拉選單優先連動教師於 `user_schedules` 同步之授課清單，並支援展開檢視授課週課表 |
+| `feat` | `TeacherDashboard.tsx`：新增「📋 學生請假審核」面板，提供「✅ 核准」與「❌ 駁回」按鈕；核准時自動將對應假別（`excused_sick` / `excused_personal`）與事由同步 UPDATE 或 INSERT 至 `attendance_records` |
+| `chore` | `requirements.txt` 新增 `requests`、`beautifulsoup4`；新增 `sql/schedule_and_leave.sql` 並同步更新 `README.md` 資料表與 API 文件 |
+
+> 🚀 同步部署至 `gh-pages`；後端請重啟 `python start_server.py` 載入新路由
 
 ---
 
@@ -391,3 +409,4 @@ gh-pages（生產發布）← 由 Vite build 產物自動推送，請勿手動�
 | v0.4.3 | 2026-11-08 | 全班趨勢圖 + 個人明細彈窗 + CSV 報表匯出 |
 | v0.4.4 | 2026-11-08 | 修復姓名欄位夾帶學號前綴（前端清洗 + 後端寫入正規化） |
 | v0.4.5 | 2026-11-08 | 移除學生端假資料 + 空狀態提示 + 下拉選項白底黑字 |
+| v0.5.0 | 2026-11-08 | 南台校務課表一鍵同步 + 依節次請假與教師審核連動 |
