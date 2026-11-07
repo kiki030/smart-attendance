@@ -7,6 +7,18 @@ import '../App.css'
 
 interface Props { user: AppUser }
 
+// 可選課程清單
+const COURSE_OPTIONS = [
+  '人工智慧概論',
+  '專題討論',
+  '資料結構',
+  '演算法',
+  '計算機網路',
+  '作業系統',
+  '資料庫系統',
+  '機器學習',
+]
+
 const MOCK_RECORDS: AttendanceRecord[] = [
   { id: '1', student_id: '4B2G0001', student_name: '王小明', course_name: '人工智慧概論', date: new Date().toISOString().slice(0, 10), status: 'present' },
   { id: '2', student_id: '4B2G0002', student_name: '李小花', course_name: '人工智慧概論', date: new Date().toISOString().slice(0, 10), status: 'late' },
@@ -22,13 +34,18 @@ export default function TeacherDashboard({ user }: Props) {
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [rollCallActive, setRollCallActive] = useState(false)
   const [records, setRecords] = useState<AttendanceRecord[]>([])
-  const [savedRows, setSavedRows] = useState<Set<string>>(new Set())
   const [time, setTime] = useState(new Date())
   const [camError, setCamError] = useState('')
+
+  // ── 課程與上課時間設定 ─────────────────────────────────
+  const [selectedCourse, setSelectedCourse] = useState(COURSE_OPTIONS[0])
+  const [classStartTime, setClassStartTime] = useState('')  // 格式 'HH:MM'
+
   const [rollCallResult, setRollCallResult] = useState<{
     total_detected: number
     identified_count: number
     unknown_count: number
+    attendance_status?: string
     results: Array<{ student_id: string; name: string; similarity: number; status: string }>
   } | null>(null)
   const [manualUploading, setManualUploading] = useState(false)
@@ -56,14 +73,12 @@ export default function TeacherDashboard({ user }: Props) {
   // ── 讀取學生名冊與今日出勤紀錄 ────────────────────────────
   const loadRosterAndAttendance = useCallback(async () => {
     try {
-      // 1. 從 student_faces 讀取所有註冊學生的學號與姓名
       const { data: students, error: studentError } = await supabase
         .from('student_faces')
         .select('student_id, name')
 
       if (studentError) throw studentError
 
-      // 2. 讀取今日的出勤紀錄
       const todayStr = new Date().toISOString().slice(0, 10)
       const { data: todayRecords, error: recordError } = await supabase
         .from('attendance_records')
@@ -72,14 +87,13 @@ export default function TeacherDashboard({ user }: Props) {
 
       if (recordError) throw recordError
 
-      // 3. 將註冊學生與出勤紀錄進行對接
       const mappedRecords: AttendanceRecord[] = (students || []).map((student) => {
         const record = (todayRecords || []).find(r => r.student_id === student.student_id)
         return {
           id: record?.id || `temp-${student.student_id}`,
           student_id: student.student_id || '',
           student_name: student.name || '未登錄姓名',
-          course_name: record?.course_name || '人工智慧概論',
+          course_name: record?.course_name || selectedCourse,
           date: todayStr,
           status: record?.status || 'absent',
           check_in_time: record?.check_in_time,
@@ -90,29 +104,27 @@ export default function TeacherDashboard({ user }: Props) {
       setRecords(mappedRecords)
     } catch (err) {
       console.error('Error loading roster/attendance:', err)
-      // 若 Supabase 載入失敗，則回退到 MOCK_RECORDS 作為示範
       setRecords(MOCK_RECORDS)
     }
-  }, [])
+  }, [selectedCourse])
 
-  // 組件掛載後載入資料，且每 8 秒自動背景刷新一次，確保與雲端同步
   useEffect(() => {
     loadRosterAndAttendance()
     const interval = setInterval(loadRosterAndAttendance, 8000)
     return () => clearInterval(interval)
   }, [loadRosterAndAttendance])
 
-  // ── 當 rollCallActive 為 true 且 stream 存在時，將其綁定至 video 元素 ──
+  // ── 綁定 video stream ──────────────────────────────────
   useEffect(() => {
     if (rollCallActive && stream && videoRef.current) {
       videoRef.current.srcObject = stream
       videoRef.current.play().catch((err) => {
-        console.error("Video play failed:", err)
+        console.error('Video play failed:', err)
       })
     }
   }, [rollCallActive, stream])
 
-  // ── 定期抓取 WebCam 畫面並送至 AI 後端進行多人點名 ─────────────────
+  // ── 定期抓取 WebCam 畫面並送至 AI 後端 ────────────────────
   useEffect(() => {
     if (!rollCallActive || backendStatus !== 'online') return
 
@@ -133,25 +145,21 @@ export default function TeacherDashboard({ user }: Props) {
           const file = new File([blob], 'rollcall_frame.jpg', { type: 'image/jpeg' })
           const formData = new FormData()
           formData.append('file', file)
+          formData.append('course_name', selectedCourse)
+          if (classStartTime) formData.append('class_start_time', classStartTime)
 
           try {
             setLiveChecking(true)
             const res = await fetch(`${apiBase}/api/roll-call`, {
               method: 'POST',
               body: formData,
-              headers: {
-                'ngrok-skip-browser-warning': 'true'
-              }
+              headers: { 'ngrok-skip-browser-warning': 'true' }
             })
             setLiveChecking(false)
             if (res.ok) {
               const data = await res.json()
-              console.log('AI Roll Call Result:', data)
               setLiveRollCallResult(data)
-              // 若有成功識別出任何人，立即重新載入出勤資料
-              if (data.identified_count > 0) {
-                loadRosterAndAttendance()
-              }
+              if (data.identified_count > 0) loadRosterAndAttendance()
             }
           } catch (e) {
             setLiveChecking(false)
@@ -161,13 +169,13 @@ export default function TeacherDashboard({ user }: Props) {
       } catch (err) {
         console.error('Error capturing frame:', err)
       }
-    }, 3000) // 每 3 秒比對一次
+    }, 3000)
 
     return () => {
       clearInterval(interval)
       setLiveChecking(false)
     }
-  }, [rollCallActive, backendStatus, apiBase, loadRosterAndAttendance])
+  }, [rollCallActive, backendStatus, apiBase, selectedCourse, classStartTime, loadRosterAndAttendance])
 
   const startWebcam = useCallback(async () => {
     try {
@@ -201,60 +209,30 @@ export default function TeacherDashboard({ user }: Props) {
     }
   }
 
-  function updateStatus(id: string, status: AttendanceRecord['status']) {
+  // ── 自動儲存：修改 status 時立即同步 Supabase ───────────
+  async function updateStatus(id: string, status: AttendanceRecord['status']) {
     setRecords(prev => prev.map(r => r.id === id ? { ...r, status } : r))
-    setSavedRows(prev => { const n = new Set(prev); n.delete(id); return n })
+    if (id.startsWith('temp-')) return  // 尚未寫入 DB，skip
+    try {
+      await supabase.from('attendance_records').update({ status }).eq('id', id)
+    } catch (err) {
+      console.error('Auto-save status failed:', err)
+    }
   }
 
+  // ── 自動儲存：修改 note 時 debounce 1s 後同步 Supabase ──
+  const noteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   function updateNote(id: string, note: string) {
     setRecords(prev => prev.map(r => r.id === id ? { ...r, note } : r))
-    setSavedRows(prev => { const n = new Set(prev); n.delete(id); return n })
-  }
-
-  async function saveRow(id: string) {
-    const rec = records.find(r => r.id === id)
-    if (!rec) return
-    try {
-      const isTemp = id.startsWith('temp-')
-      if (isTemp) {
-        // 新增出勤紀錄到 Supabase
-        const { data, error } = await supabase
-          .from('attendance_records')
-          .insert({
-            student_id: rec.student_id,
-            student_name: rec.student_name,
-            course_name: rec.course_name,
-            date: rec.date,
-            status: rec.status,
-            note: rec.note,
-            check_in_time: rec.check_in_time || null,
-          })
-          .select()
-          .single()
-        
-        if (error) throw error
-        
-        if (data) {
-          // 更新本地狀態中的 ID
-          setRecords(prev => prev.map(r => r.student_id === rec.student_id ? { ...r, id: data.id } : r))
-        }
-      } else {
-        // 更新現有出勤紀錄
-        const { error } = await supabase
-          .from('attendance_records')
-          .update({
-            status: rec.status,
-            note: rec.note,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', id)
-          
-        if (error) throw error
+    if (id.startsWith('temp-')) return
+    clearTimeout(noteTimers.current[id])
+    noteTimers.current[id] = setTimeout(async () => {
+      try {
+        await supabase.from('attendance_records').update({ note }).eq('id', id)
+      } catch (err) {
+        console.error('Auto-save note failed:', err)
       }
-      setSavedRows(prev => { const n = new Set(prev); n.add(rec.id); return n })
-    } catch (err) {
-      console.error('Error saving attendance record:', err)
-    }
+    }, 1000)
   }
 
   async function handleLogout() {
@@ -263,7 +241,7 @@ export default function TeacherDashboard({ user }: Props) {
     window.location.reload()
   }
 
-  // ── 手動上傳照片進行 AI 多人點名 ─────────────────────────────
+  // ── 手動上傳照片進行 AI 多人點名 ─────────────────────────
   async function manualRollCall(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -276,24 +254,22 @@ export default function TeacherDashboard({ user }: Props) {
     try {
       const formData = new FormData()
       formData.append('file', file)
+      formData.append('course_name', selectedCourse)
+      if (classStartTime) formData.append('class_start_time', classStartTime)
+
       const res = await fetch(`${apiBase}/api/roll-call`, {
         method: 'POST',
         body: formData,
-        headers: {
-          'ngrok-skip-browser-warning': 'true'
-        }
+        headers: { 'ngrok-skip-browser-warning': 'true' }
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setRollCallResult(data)
-      if (data.identified_count > 0) {
-        loadRosterAndAttendance()
-      }
+      if (data.identified_count > 0) loadRosterAndAttendance()
     } catch (err) {
       alert(`辨識失敗：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setManualUploading(false)
-      // Reset file input so the same file can be re-selected
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
@@ -307,7 +283,6 @@ export default function TeacherDashboard({ user }: Props) {
 
   return (
     <div className="dashboard-root">
-      {/* 動態背景 */}
       <div className="bg-orb orb1" style={{ opacity: 0.08 }} />
       <div className="bg-orb orb2" style={{ opacity: 0.06 }} />
 
@@ -316,14 +291,10 @@ export default function TeacherDashboard({ user }: Props) {
         <div className="nav-left">
           <div className="nav-logo">🎓 <span className="nav-logo-text">南台科技大學智慧點名</span></div>
           <div className="nav-clock">{timeStr}</div>
-          {/* AI 後端狀態點 */}
           <div className={`backend-status-dot ${
             backendStatus === 'online' ? 'bs-online' :
             backendStatus === 'offline' ? 'bs-offline' : 'bs-checking'
-          }`} title={`AI 後端：${
-            backendStatus === 'online' ? '在線' :
-            backendStatus === 'offline' ? '離線' : '檢測中'
-          }`}>
+          }`} title={`AI 後端：${backendStatus === 'online' ? '在線' : backendStatus === 'offline' ? '離線' : '檢測中'}`}>
             <span className="bs-label">AI {backendStatus === 'online' ? '在線' : backendStatus === 'offline' ? '離線' : '檢測'}</span>
           </div>
         </div>
@@ -341,10 +312,48 @@ export default function TeacherDashboard({ user }: Props) {
       </nav>
 
       <div className="dashboard-content">
-        {/* 日期標題 */}
         <div className="page-header">
           <h1 className="page-title">教師主控台</h1>
           <p className="page-date">{dateStr}</p>
+        </div>
+
+        {/* ── 課程與上課時間設定面板 ── */}
+        <div className="cam-section" style={{ marginBottom: '1.5rem' }}>
+          <h2 className="section-title-lg">⚙️ 課程設定</h2>
+          <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginTop: '1rem', alignItems: 'flex-end' }}>
+            {/* 課程選擇 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <label style={{ fontSize: '0.82rem', color: '#94a3b8', fontWeight: 600 }}>📚 課程名稱</label>
+              <select
+                value={selectedCourse}
+                onChange={e => setSelectedCourse(e.target.value)}
+                className="status-select"
+                style={{ minWidth: '180px', padding: '0.55rem 0.8rem', fontSize: '0.9rem' }}
+              >
+                {COURSE_OPTIONS.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            {/* 上課時間 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+              <label style={{ fontSize: '0.82rem', color: '#94a3b8', fontWeight: 600 }}>
+                🕐 上課開始時間 <span style={{ color: '#64748b', fontWeight: 400 }}>(逾 15 分鐘視為遲到)</span>
+              </label>
+              <input
+                type="time"
+                value={classStartTime}
+                onChange={e => setClassStartTime(e.target.value)}
+                className="note-input"
+                style={{ padding: '0.55rem 0.8rem', fontSize: '0.9rem', width: '140px' }}
+              />
+            </div>
+            {/* 目前設定摘要 */}
+            <div style={{ padding: '0.5rem 1rem', background: 'rgba(99,102,241,0.12)', borderRadius: '10px', border: '1px solid rgba(99,102,241,0.3)', fontSize: '0.82rem', color: '#a5b4fc' }}>
+              <div>課程：<strong>{selectedCourse}</strong></div>
+              <div>上課時間：<strong>{classStartTime || '未設定（不判斷遲到）'}</strong></div>
+            </div>
+          </div>
         </div>
 
         {/* 統計卡片 */}
@@ -367,11 +376,10 @@ export default function TeacherDashboard({ user }: Props) {
           </div>
         </div>
 
-        {/* 點名開關 + 鏡頭 */}
+        {/* 即時鏡頭點名 */}
         <div className="cam-section">
           <div className="cam-header">
             <h2 className="section-title-lg">即時點名監控</h2>
-            {/* 點名開關 */}
             <button
               className={`roll-call-btn ${rollCallActive ? 'roll-active' : 'roll-inactive'}`}
               onClick={toggleRollCall}
@@ -384,16 +392,10 @@ export default function TeacherDashboard({ user }: Props) {
           <div className="webcam-container">
             {rollCallActive ? (
               <>
-                <video
-                  ref={videoRef}
-                  className="webcam-video"
-                  autoPlay
-                  muted
-                  playsInline
-                />
+                <video ref={videoRef} className="webcam-video" autoPlay muted playsInline />
                 {camError && <div className="cam-error">{camError}</div>}
                 <div className="cam-overlay">
-                  <div className="cam-badge">🔴 LIVE · AI 辨識中</div>
+                  <div className="cam-badge">🔴 LIVE · {selectedCourse} · AI 辨識中</div>
                 </div>
               </>
             ) : (
@@ -407,14 +409,14 @@ export default function TeacherDashboard({ user }: Props) {
 
           {/* 即時比對狀態面板 */}
           {rollCallActive && (
-            <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(255, 255, 255, 0.05)', borderRadius: '12px', border: '1px solid var(--border)' }}>
+            <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.05)', borderRadius: '12px', border: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.8rem' }}>
                 <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>🤖 AI 即時比對狀態</span>
                 <span style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
                   {liveChecking ? '⏳ 正在掃描比對...' : '🟢 監控中 (每 3 秒比對)'}
                 </span>
               </div>
-              
+
               {liveRollCallResult ? (
                 <div>
                   <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.8rem', fontSize: '0.8rem' }}>
@@ -440,7 +442,7 @@ export default function TeacherDashboard({ user }: Props) {
                                 {(r.similarity * 100).toFixed(0)}% 相似度
                               </td>
                               <td style={{ padding: '0.4rem', textAlign: 'right' }}>
-                                {r.status === 'present' ? '🟢 已出席' : '🔴 警報'}
+                                {r.status === 'present' ? '🟢 出席' : r.status === 'late' ? '🟡 遲到' : '🔴 警報'}
                               </td>
                             </tr>
                           ))}
@@ -458,7 +460,7 @@ export default function TeacherDashboard({ user }: Props) {
           )}
         </div>
 
-        {/* ── 手動上傳點名區塊 ── */}
+        {/* 手動上傳點名 */}
         <div className="cam-section" style={{ marginTop: '1.5rem' }}>
           <div className="cam-header">
             <h2 className="section-title-lg">📁 上傳照片 AI 點名</h2>
@@ -490,7 +492,6 @@ export default function TeacherDashboard({ user }: Props) {
           {/* AI 辨識結果卡片 */}
           {rollCallResult && (
             <div style={{ marginTop: '1.5rem' }}>
-              {/* 統計摘要列 */}
               <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.2rem' }}>
                 <div className="stat-card" style={{ flex: '1', minWidth: '130px', background: 'rgba(99,102,241,0.12)', borderColor: '#6366f1' }}>
                   <div className="stat-number" style={{ color: '#818cf8' }}>{rollCallResult.total_detected}</div>
@@ -504,9 +505,16 @@ export default function TeacherDashboard({ user }: Props) {
                   <div className="stat-number">{rollCallResult.unknown_count}</div>
                   <div className="stat-label">⚠️ 未知人臉</div>
                 </div>
+                {rollCallResult.attendance_status && (
+                  <div className="stat-card stat-late" style={{ flex: '1', minWidth: '130px' }}>
+                    <div className="stat-number" style={{ fontSize: '1rem' }}>
+                      {rollCallResult.attendance_status === 'late' ? '🟡 遲到' : '✅ 出席'}
+                    </div>
+                    <div className="stat-label">本次簽到狀態</div>
+                  </div>
+                )}
               </div>
 
-              {/* 逐臉詳細結果 */}
               {rollCallResult.results.length > 0 && (
                 <div className="table-wrapper">
                   <table className="att-table">
@@ -526,18 +534,14 @@ export default function TeacherDashboard({ user }: Props) {
                           <td className="td-id">{r.status === 'unknown_alert' ? '—' : r.student_id}</td>
                           <td className="td-name">{r.status === 'unknown_alert' ? 'Unknown' : r.name}</td>
                           <td>
-                            <span style={{
-                              fontWeight: 700,
-                              color: r.similarity >= 0.7 ? '#4ade80' : '#f87171',
-                            }}>
+                            <span style={{ fontWeight: 700, color: r.similarity >= 0.7 ? '#4ade80' : '#f87171' }}>
                               {(r.similarity * 100).toFixed(1)}%
                             </span>
                           </td>
                           <td>
-                            {r.status === 'present'
-                              ? <span className="saved-badge" style={{ background: 'rgba(74,222,128,0.18)', color: '#4ade80' }}>✅ 出席</span>
-                              : <span className="saved-badge" style={{ background: 'rgba(248,113,113,0.18)', color: '#f87171' }}>⚠️ 未知警報</span>
-                            }
+                            {r.status === 'present' && <span className="saved-badge" style={{ background: 'rgba(74,222,128,0.18)', color: '#4ade80' }}>✅ 出席</span>}
+                            {r.status === 'late' && <span className="saved-badge" style={{ background: 'rgba(251,191,36,0.18)', color: '#fbbf24' }}>🟡 遲到</span>}
+                            {r.status === 'unknown_alert' && <span className="saved-badge" style={{ background: 'rgba(248,113,113,0.18)', color: '#f87171' }}>⚠️ 未知警報</span>}
                           </td>
                         </tr>
                       ))}
@@ -549,10 +553,10 @@ export default function TeacherDashboard({ user }: Props) {
           )}
         </div>
 
-        {/* 出勤紀錄 Table */}
+        {/* 出勤紀錄管理（自動儲存，無須按鈕） */}
         <div className="table-section">
           <h2 className="section-title-lg">出勤紀錄管理</h2>
-          <p className="table-hint">可直接修改狀態與備註後點擊「儲存」</p>
+          <p className="table-hint">修改狀態或備註後自動同步雲端，無須手動儲存</p>
           <div className="table-wrapper">
             <table className="att-table">
               <thead>
@@ -562,12 +566,11 @@ export default function TeacherDashboard({ user }: Props) {
                   <th>課程</th>
                   <th>狀態</th>
                   <th>備註</th>
-                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
                 {records.map(rec => (
-                  <tr key={rec.id} className={savedRows.has(rec.id) ? 'row-saved' : ''}>
+                  <tr key={rec.id}>
                     <td className="td-id">{rec.student_id}</td>
                     <td className="td-name">{rec.student_name}</td>
                     <td className="td-course">{rec.course_name}</td>
@@ -586,16 +589,10 @@ export default function TeacherDashboard({ user }: Props) {
                       <input
                         className="note-input"
                         type="text"
-                        placeholder="備註..."
+                        placeholder="備註（自動儲存）"
                         value={rec.note || ''}
                         onChange={e => updateNote(rec.id, e.target.value)}
                       />
-                    </td>
-                    <td>
-                      {savedRows.has(rec.id)
-                        ? <span className="saved-badge">✓ 已儲存</span>
-                        : <button className="save-row-btn" onClick={() => saveRow(rec.id)}>儲存</button>
-                      }
                     </td>
                   </tr>
                 ))}

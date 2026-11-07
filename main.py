@@ -324,26 +324,44 @@ async def register_face(
 @app.post("/api/roll-call")
 async def roll_call(
     file: UploadFile = File(...),
+    course_name: str = Form(default="人工智慧概論"),
+    class_start_time: str = Form(default=""),
 ):
     """
-    接收教室 USB 鏡頭拍下的全景畫面，進行多人臉即時點名辨識。
+    接收教室鏡頭畫面，進行多人臉即時點名辨識。
 
-    流程：
-      YOLOv8-Face 偵測所有人臉
-      → for 每張人臉：提取 ArcFace Embedding → 呼叫 Supabase RPC 比對
-      → 已知學生（similarity ≥ 0.7）→ 加入 identified_students，status=present
-      → 未知人臉（similarity < 0.7 或無符合）→ status=unknown_alert
+    新增參數：
+      course_name       : 課程名稱（預設 '人工智慧概論'）
+      class_start_time  : 上課開始時間，格式 'HH:MM'（空字串表示不判斷遲到）
+
+    遲到判定邏輯：
+      若 class_start_time 有提供，且簽到時間超過開課 15 分鐘
+      → status = 'late'（遲到）
+      否則 → status = 'present'（出席）
 
     回傳：
       total_detected    : 畫面中偵測到的總人臉數
       identified_count  : 成功識別的已知學生數
       unknown_count     : 未識別的未知人臉數
       results           : 每張人臉的詳細辨識結果列表
-
-    [TODO] 點名成功後將已知學生寫入 Supabase attendance_records 資料表。
     """
     MATCH_THRESHOLD = 0.7
     MATCH_COUNT = 1
+    LATE_GRACE_MINUTES = 15  # 開課後超過幾分鐘視為遲到
+
+    # ── 遲到判定：計算簽到當下是否超過容許遲到時間 ──────────
+    now = datetime.datetime.now()
+    attendance_status = "present"
+
+    if class_start_time:
+        try:
+            h, m = map(int, class_start_time.strip().split(":"))
+            start_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            diff_minutes = (now - start_dt).total_seconds() / 60
+            if diff_minutes > LATE_GRACE_MINUTES:
+                attendance_status = "late"
+        except Exception:
+            pass  # 格式錯誤則忽略遲到判定，預設 present
 
     try:
         # ── Step 1：讀取上傳的影像檔案 bytes ──────────────────────
@@ -400,12 +418,12 @@ async def roll_call(
                 similarity: float = float(best.get("similarity", 0))
 
                 if similarity >= MATCH_THRESHOLD:
-                    # ✅ 識別成功：加入已知學生列表
+                    # ✅ 識別成功：加入已知學生列表（套用遲到判定結果）
                     results.append({
                         "student_id": best.get("student_id", "unknown"),
                         "name": best.get("name", "Unknown"),
                         "similarity": round(similarity, 4),
-                        "status": "present",
+                        "status": attendance_status,
                     })
                     identified_count += 1
 
@@ -417,15 +435,29 @@ async def roll_call(
                             .eq("student_id", best.get("student_id"))\
                             .eq("date", today_str)\
                             .execute()
-                        
+
                         if not existing_att.data:
                             supabase.table("attendance_records").insert({
                                 "student_id": best.get("student_id"),
                                 "student_name": best.get("name"),
-                                "status": "present",
-                                "check_in_time": datetime.datetime.now().astimezone().isoformat(),
-                                "course_name": "人工智慧概論",
+                                "status": attendance_status,
+                                "check_in_time": now.astimezone().isoformat(),
+                                "course_name": course_name,
+                                "date": today_str,
                             }).execute()
+                        else:
+                            # 若已有紀錄但狀態為 absent，更新為實際簽到狀態
+                            existing_id = existing_att.data[0].get("id")
+                            existing_status = existing_att.data[0].get("status", "absent") if len(existing_att.data[0]) > 1 else "absent"
+                            if existing_status == "absent":
+                                supabase.table("attendance_records")\
+                                    .update({
+                                        "status": attendance_status,
+                                        "check_in_time": now.astimezone().isoformat(),
+                                        "course_name": course_name,
+                                    })\
+                                    .eq("id", existing_id)\
+                                    .execute()
                     except Exception as e_db:
                         print(f"    ⚠️ 寫入出勤紀錄失敗: {e_db}")
 
@@ -455,6 +487,7 @@ async def roll_call(
             "total_detected": total_detected,
             "identified_count": identified_count,
             "unknown_count": unknown_count,
+            "attendance_status": attendance_status,
             "results": results,
         }
 
