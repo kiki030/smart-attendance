@@ -922,6 +922,22 @@ body {
   white-space: nowrap;
 }
 
+/* Draft / unsaved state indicators */
+.draft-unsaved {
+  outline: 2px solid #fbbf24 !important;
+  border-radius: 6px;
+}
+
+.unsaved-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #fbbf24;
+  margin-left: 5px;
+  vertical-align: middle;
+  letter-spacing: 0.03em;
+}
+
 /* Status chips (student table) */
 .status-chip {
   display: inline-block;

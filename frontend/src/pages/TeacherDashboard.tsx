@@ -5,6 +5,12 @@ import { STATUS_LABELS } from '../types'
 import { useApiBase } from '../hooks/useApiBase'
 import '../App.css'
 
+// Draft state shape per record
+interface DraftEntry {
+  status: AttendanceRecord['status']
+  note: string
+}
+
 interface Props { user: AppUser }
 
 // 可選課程清單
@@ -57,6 +63,16 @@ export default function TeacherDashboard({ user }: Props) {
   } | null>(null)
   const [liveChecking, setLiveChecking] = useState(false)
 
+  // ── 草稿暫存 ──────────────────────────────────────────
+  const [drafts, setDrafts] = useState<Record<string, DraftEntry>>({})
+  const draftsRef = useRef<Record<string, DraftEntry>>({})
+  const [savingRows, setSavingRows] = useState<Set<string>>(new Set())
+  const [savedRows, setSavedRows] = useState<Set<string>>(new Set())
+  const [toast, setToast] = useState('')
+
+  // Keep draftsRef in sync so loadRosterAndAttendance can read latest drafts without stale closure
+  useEffect(() => { draftsRef.current = drafts }, [drafts])
+
   // Live clock
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000)
@@ -89,8 +105,9 @@ export default function TeacherDashboard({ user }: Props) {
 
       const mappedRecords: AttendanceRecord[] = (students || []).map((student) => {
         const record = (todayRecords || []).find(r => r.student_id === student.student_id)
+        const recordId = record?.id || `temp-${student.student_id}`
         return {
-          id: record?.id || `temp-${student.student_id}`,
+          id: recordId,
           student_id: student.student_id || '',
           student_name: student.name || '未登錄姓名',
           course_name: record?.course_name || selectedCourse,
@@ -101,7 +118,17 @@ export default function TeacherDashboard({ user }: Props) {
         }
       })
 
-      setRecords(mappedRecords)
+      // 保留有未儲存草稿的列，避免背景輪詢覆蓋編輯中的內容
+      setRecords(prev => {
+        const dirtyIds = new Set(Object.keys(draftsRef.current))
+        return mappedRecords.map(newRec => {
+          if (dirtyIds.has(newRec.id)) {
+            const existing = prev.find(p => p.id === newRec.id)
+            return existing ?? newRec
+          }
+          return newRec
+        })
+      })
     } catch (err) {
       console.error('Error loading roster/attendance:', err)
       setRecords(MOCK_RECORDS)
@@ -209,30 +236,77 @@ export default function TeacherDashboard({ user }: Props) {
     }
   }
 
-  // ── 自動儲存：修改 status 時立即同步 Supabase ───────────
-  async function updateStatus(id: string, status: AttendanceRecord['status']) {
-    setRecords(prev => prev.map(r => r.id === id ? { ...r, status } : r))
-    if (id.startsWith('temp-')) return  // 尚未寫入 DB，skip
-    try {
-      await supabase.from('attendance_records').update({ status }).eq('id', id)
-    } catch (err) {
-      console.error('Auto-save status failed:', err)
-    }
+  // ── 草稿更新：修改 status 僅更新本地草稿狀態 ───────────
+  function updateStatus(id: string, status: AttendanceRecord['status']) {
+    const base = records.find(r => r.id === id)
+    if (!base) return
+    setDrafts(prev => ({
+      ...prev,
+      [id]: { status, note: prev[id]?.note ?? base.note ?? '' }
+    }))
   }
 
-  // ── 自動儲存：修改 note 時 debounce 1s 後同步 Supabase ──
-  const noteTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  // ── 草稿更新：修改 note 僅更新本地草稿狀態 ─────────────
   function updateNote(id: string, note: string) {
-    setRecords(prev => prev.map(r => r.id === id ? { ...r, note } : r))
-    if (id.startsWith('temp-')) return
-    clearTimeout(noteTimers.current[id])
-    noteTimers.current[id] = setTimeout(async () => {
-      try {
-        await supabase.from('attendance_records').update({ note }).eq('id', id)
-      } catch (err) {
-        console.error('Auto-save note failed:', err)
+    const base = records.find(r => r.id === id)
+    if (!base) return
+    setDrafts(prev => ({
+      ...prev,
+      [id]: { status: prev[id]?.status ?? base.status, note }
+    }))
+  }
+
+  // ── 判斷某列是否有未儲存變更 ──────────────────────────
+  function isDirty(id: string): boolean {
+    return id in drafts
+  }
+
+  // ── 顯示 Toast 訊息（2.5 秒後自動消失）──────────────────
+  function showToast(msg: string) {
+    setToast(msg)
+    setTimeout(() => setToast(''), 2500)
+  }
+
+  // ── 確認儲存：將草稿寫入 Supabase ───────────────────────
+  async function saveRow(id: string) {
+    const draft = drafts[id]
+    const base = records.find(r => r.id === id)
+    if (!draft || !base) return
+
+    setSavingRows(prev => new Set(prev).add(id))
+    try {
+      if (id.startsWith('temp-')) {
+        // 尚未在 DB 中，INSERT 一筆新紀錄
+        const { error } = await supabase.from('attendance_records').insert({
+          student_id: base.student_id,
+          student_name: base.student_name,
+          course_name: base.course_name,
+          date: base.date,
+          status: draft.status,
+          note: draft.note,
+          updated_at: new Date().toISOString(),
+        })
+        if (error) throw error
+      } else {
+        const { error } = await supabase
+          .from('attendance_records')
+          .update({ status: draft.status, note: draft.note, updated_at: new Date().toISOString() })
+          .eq('id', id)
+        if (error) throw error
       }
-    }, 1000)
+
+      // 儲存成功：清除草稿、顯示 ✓ 標記與 Toast
+      setDrafts(prev => { const n = { ...prev }; delete n[id]; return n })
+      setSavedRows(prev => { const n = new Set(prev); n.add(id); return n })
+      setTimeout(() => setSavedRows(prev => { const n = new Set(prev); n.delete(id); return n }), 2500)
+      showToast(`✅ ${base.student_name} 的出勤紀錄已儲存`)
+      await loadRosterAndAttendance()
+    } catch (err) {
+      console.error('saveRow failed:', err)
+      showToast(`❌ 儲存失敗：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setSavingRows(prev => { const n = new Set(prev); n.delete(id); return n })
+    }
   }
 
   async function handleLogout() {
@@ -553,10 +627,27 @@ export default function TeacherDashboard({ user }: Props) {
           )}
         </div>
 
-        {/* 出勤紀錄管理（自動儲存，無須按鈕） */}
+        {/* 出勤紀錄管理（草稿暫存，確認後儲存） */}
         <div className="table-section">
           <h2 className="section-title-lg">出勤紀錄管理</h2>
-          <p className="table-hint">修改狀態或備註後自動同步雲端，無須手動儲存</p>
+          <p className="table-hint">修改狀態或備註後，點擊「確認儲存」寫入雲端</p>
+
+          {/* Toast 提示 */}
+          {toast && (
+            <div style={{
+              background: toast.startsWith('❌') ? 'rgba(248,113,113,0.12)' : 'rgba(74,222,128,0.12)',
+              border: `1px solid ${toast.startsWith('❌') ? '#f87171' : '#4ade80'}`,
+              color: toast.startsWith('❌') ? '#f87171' : '#4ade80',
+              padding: '0.6rem 1rem',
+              borderRadius: '10px',
+              marginBottom: '1rem',
+              fontSize: '0.85rem',
+              fontWeight: 500,
+            }}>
+              {toast}
+            </div>
+          )}
+
           <div className="table-wrapper">
             <table className="att-table">
               <thead>
@@ -566,36 +657,60 @@ export default function TeacherDashboard({ user }: Props) {
                   <th>課程</th>
                   <th>狀態</th>
                   <th>備註</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {records.map(rec => (
-                  <tr key={rec.id}>
-                    <td className="td-id">{rec.student_id}</td>
-                    <td className="td-name">{rec.student_name}</td>
-                    <td className="td-course">{rec.course_name}</td>
-                    <td>
-                      <select
-                        className={`status-select status-${rec.status}`}
-                        value={rec.status}
-                        onChange={e => updateStatus(rec.id, e.target.value as AttendanceRecord['status'])}
-                      >
-                        {(Object.keys(STATUS_LABELS) as AttendanceRecord['status'][]).map(s => (
-                          <option key={s} value={s}>{STATUS_LABELS[s]}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>
-                      <input
-                        className="note-input"
-                        type="text"
-                        placeholder="備註（自動儲存）"
-                        value={rec.note || ''}
-                        onChange={e => updateNote(rec.id, e.target.value)}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                {records.map(rec => {
+                  const draft = drafts[rec.id]
+                  const dirty = isDirty(rec.id)
+                  const saving = savingRows.has(rec.id)
+                  const saved = savedRows.has(rec.id)
+                  const currentStatus = draft?.status ?? rec.status
+                  const currentNote = draft?.note ?? rec.note ?? ''
+                  return (
+                    <tr key={rec.id} className={saved ? 'row-saved' : ''}>
+                      <td className="td-id">{rec.student_id}</td>
+                      <td className="td-name">{rec.student_name}</td>
+                      <td className="td-course">{rec.course_name}</td>
+                      <td>
+                        <select
+                          className={`status-select status-${currentStatus}${dirty ? ' draft-unsaved' : ''}`}
+                          value={currentStatus}
+                          onChange={e => updateStatus(rec.id, e.target.value as AttendanceRecord['status'])}
+                        >
+                          {(Object.keys(STATUS_LABELS) as AttendanceRecord['status'][]).map(s => (
+                            <option key={s} value={s}>{STATUS_LABELS[s]}</option>
+                          ))}
+                        </select>
+                        {dirty && <span className="unsaved-badge">未儲存</span>}
+                      </td>
+                      <td>
+                        <input
+                          className={`note-input${dirty ? ' draft-unsaved' : ''}`}
+                          type="text"
+                          placeholder="備註"
+                          value={currentNote}
+                          onChange={e => updateNote(rec.id, e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        {saved ? (
+                          <span className="saved-badge">✓ 已儲存</span>
+                        ) : (
+                          <button
+                            className="save-row-btn"
+                            onClick={() => saveRow(rec.id)}
+                            disabled={!dirty || saving}
+                            style={{ opacity: dirty ? 1 : 0.35, cursor: dirty ? 'pointer' : 'default' }}
+                          >
+                            {saving ? '⏳ 儲存中...' : '確認儲存'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
