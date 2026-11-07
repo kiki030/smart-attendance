@@ -427,37 +427,49 @@ async def roll_call(
                     })
                     identified_count += 1
 
-                    # 避免重複寫入今日出勤紀錄
+                    # ── 防重複簽到：同一學生 + 同一課程 + 今日，只寫入一次 ──
                     today_str = datetime.date.today().isoformat()
+                    sid = best.get("student_id", "unknown")
+                    sname = best.get("name", "Unknown")
                     try:
-                        existing_att = supabase.table("attendance_records")\
-                            .select("id")\
-                            .eq("student_id", best.get("student_id"))\
-                            .eq("date", today_str)\
+                        # 查詢條件：student_id + course_name + date 三者皆符合才算重複
+                        existing_att = (
+                            supabase.table("attendance_records")
+                            .select("id, status")
+                            .eq("student_id", sid)
+                            .eq("course_name", course_name)
+                            .eq("date", today_str)
+                            .limit(1)
                             .execute()
+                        )
 
                         if not existing_att.data:
+                            # ✅ 此課程今日尚無紀錄 → 正常 INSERT
                             supabase.table("attendance_records").insert({
-                                "student_id": best.get("student_id"),
-                                "student_name": best.get("name"),
+                                "student_id": sid,
+                                "student_name": sname,
                                 "status": attendance_status,
                                 "check_in_time": now.astimezone().isoformat(),
                                 "course_name": course_name,
                                 "date": today_str,
                             }).execute()
+                            print(f"    ✅ 寫入出勤：{sname}（{sid}）→ {attendance_status}")
                         else:
-                            # 若已有紀錄但狀態為 absent，更新為實際簽到狀態
-                            existing_id = existing_att.data[0].get("id")
-                            existing_status = existing_att.data[0].get("status", "absent") if len(existing_att.data[0]) > 1 else "absent"
+                            # ⏭️ 已有紀錄：跳過 INSERT，僅在原狀態為 absent 時更新
+                            existing_row = existing_att.data[0]
+                            existing_id = existing_row.get("id")
+                            existing_status = existing_row.get("status", "present")
                             if existing_status == "absent":
                                 supabase.table("attendance_records")\
                                     .update({
                                         "status": attendance_status,
                                         "check_in_time": now.astimezone().isoformat(),
-                                        "course_name": course_name,
                                     })\
                                     .eq("id", existing_id)\
                                     .execute()
+                                print(f"    🔄 更新出勤（absent→{attendance_status}）：{sname}（{sid}）")
+                            else:
+                                print(f"    ⏭️ 跳過重複簽到：{sname}（{sid}），課程={course_name}，狀態={existing_status}")
                     except Exception as e_db:
                         print(f"    ⚠️ 寫入出勤紀錄失敗: {e_db}")
 
