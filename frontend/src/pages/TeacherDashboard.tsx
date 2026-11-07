@@ -414,15 +414,21 @@ export default function TeacherDashboard({ user }: Props) {
   function exportCSV() {
     const BOM = '\uFEFF' // UTF-8 BOM，讓 Excel 正確顯示中文
     const headers = ['學號', '姓名', '課程', '日期', '簽到時間', '狀態', '備註']
-    const rows = records.map(r => [
-      r.student_id,
-      r.student_name,
-      r.course_name,
-      r.date,
-      r.check_in_time ? new Date(r.check_in_time).toLocaleTimeString('zh-TW', { hour12: false }) : '',
-      STATUS_LABELS[r.status] ?? r.status,
-      r.note ?? '',
-    ])
+    const rows = records.map(r => {
+      // 清洗姓名：若姓名開頭包含學號字串，自動去除，只保留純姓名
+      const cleanName = r.student_name
+        ? r.student_name.replace(r.student_id, '').trim()
+        : ''
+      return [
+        r.student_id,
+        cleanName,
+        r.course_name,
+        r.date,
+        r.check_in_time ? new Date(r.check_in_time).toLocaleTimeString('zh-TW', { hour12: false }) : '',
+        STATUS_LABELS[r.status] ?? r.status,
+        r.note ?? '',
+      ]
+    })
     const csv = BOM + [headers, ...rows].map(row =>
       row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
     ).join('\r\n')

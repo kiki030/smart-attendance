@@ -1,6 +1,6 @@
 # 📋 VERSION — 校園智慧點名系統版本記錄
 
-> **目前穩定版本：`v0.4.3`**
+> **目前穩定版本：`v0.4.4`**
 
 ---
 
@@ -31,6 +31,21 @@ gh-pages（生產發布）← 由 Vite build 產物自動推送，請勿手動�
 ---
 
 ## 📅 Change Log（變更歷史）
+
+---
+
+### v0.4.4 — 2026-11-08
+**fix: 修復姓名欄位夾帶學號前綴的問題（前端 CSV 匯出 + 後端寫入正規化）**
+
+| 類型 | 變更內容 |
+|------|---------|
+| `fix` | `TeacherDashboard.tsx`：CSV 匯出時對 `student_name` 執行清洗，自動去除開頭含 `student_id` 的前綴字串（例如 `'4B6G3336 痛又痛'` → `'痛又痛'`） |
+| `fix` | `main.py`：新增 `normalize_name(name, student_id)` 輔助函式，統一處理姓名正規化邏輯 |
+| `fix` | `main.py /api/register-face`：人臉註冊時對傳入的 `name` 執行 `normalize_name`，確保 `student_faces` 表存入純姓名，從源頭防止污染 |
+| `fix` | `main.py /api/roll-call`：點名辨識結果寫入 `attendance_records` 時，對 `student_name` 執行 `normalize_name`，確保出勤紀錄姓名乾淨 |
+| `refactor` | `normalize_name` 設有 fallback：若清洗後字串為空，保留原始值，避免資料遺失 |
+
+> 🚀 同步部署至 `gh-pages`；後端需重啟 `start_server.py` 生效
 
 ---
 
@@ -361,3 +376,4 @@ gh-pages（生產發布）← 由 Vite build 產物自動推送，請勿手動�
 | v0.4.1 | 2026-11-08 | 草稿暫存模式 + 確認儲存按鈕 + 未儲存視覺提示 |
 | v0.4.2 | 2026-11-08 | 防重複簽到查詢加入課程名稱條件 + 修正 status 讀取 Bug |
 | v0.4.3 | 2026-11-08 | 全班趨勢圖 + 個人明細彈窗 + CSV 報表匯出 |
+| v0.4.4 | 2026-11-08 | 修復姓名欄位夾帶學號前綴（前端清洗 + 後端寫入正規化） |

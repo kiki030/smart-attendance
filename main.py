@@ -92,6 +92,16 @@ def extract_face_embedding(img_matrix) -> list[float]:
     return faces[0].normed_embedding.tolist()
 
 
+# ── 姓名正規化：去除開頭夾帶的學號前綴 ──────────────────────
+def normalize_name(name: str, student_id: str) -> str:
+    """
+    若 student_name 開頭包含 student_id（例如 '4B6G3336 痛又痛'），
+    自動去除學號前綴，只保留純姓名。
+    """
+    cleaned = name.replace(student_id, "").strip()
+    return cleaned if cleaned else name  # 若清洗後為空，保留原始值作為 fallback
+
+
 # ── 路由：根路由健康檢查 ──────────────────────────────────────
 @app.get("/")
 def root():
@@ -250,6 +260,9 @@ async def register_face(
         # 若未偵測到人臉，extract_face_embedding 會拋出 HTTPException 400
         new_embedding: list[float] = extract_face_embedding(img_matrix)
 
+        # 清洗姓名：去除開頭夾帶的學號前綴（例如 '4B6G3336 痛又痛' → '痛又痛'）
+        clean_name = normalize_name(name, student_id)
+
         # ── Step 4：查詢該 student_id 是否已存在於 Supabase ───────────
         existing = (
             supabase.table("student_faces")
@@ -263,7 +276,7 @@ async def register_face(
             # ─── 新註冊：直接 INSERT ────────────────────────────────────
             record = {
                 "student_id": student_id,
-                "name": name,
+                "name": clean_name,
                 "face_embedding": new_embedding,
             }
             response = supabase.table("student_faces").insert(record).execute()
@@ -271,7 +284,7 @@ async def register_face(
             return {
                 "status": "success",
                 "action": "inserted",
-                "message": f"{name}（{student_id}）人臉註冊成功！張入新特徵向量。",
+                "message": f"{clean_name}（{student_id}）人臉註冊成功！張入新特徵向量。",
                 "data": response.data,
             }
 
@@ -296,10 +309,10 @@ async def register_face(
                 fused_vec = fused_vec / norm
             fused_list: list[float] = fused_vec.tolist()
 
-            # UPDATE 該學生的特徵向量
+            # UPDATE 該學生的特徵向量與清洗後的姓名
             response = (
                 supabase.table("student_faces")
-                .update({"face_embedding": fused_list, "name": name})
+                .update({"face_embedding": fused_list, "name": clean_name})
                 .eq("id", row_id)
                 .execute()
             )
@@ -307,7 +320,7 @@ async def register_face(
             return {
                 "status": "success",
                 "action": "fused_and_updated",
-                "message": f"{name}（{student_id}）特徵融合完成！新角度特徵已均値嵌入至雲端向量。",
+                "message": f"{clean_name}（{student_id}）特徵融合完成！新角度特徵已均値嵌入至雲端向量。",
                 "data": response.data,
             }
 
@@ -430,7 +443,7 @@ async def roll_call(
                     # ── 防重複簽到：同一學生 + 同一課程 + 今日，只寫入一次 ──
                     today_str = datetime.date.today().isoformat()
                     sid = best.get("student_id", "unknown")
-                    sname = best.get("name", "Unknown")
+                    sname = normalize_name(best.get("name", "Unknown"), sid)  # 清洗學號前綴
                     try:
                         # 查詢條件：student_id + course_name + date 三者皆符合才算重複
                         existing_att = (
