@@ -1,11 +1,22 @@
 from __future__ import annotations
 import os
+import sys
 import json
+
+# Windows 主控台常為 cp950，print() 含 emoji 會拋 UnicodeEncodeError 使 API 回 500；
+# 改為無法編碼的字元以 '?' 取代，確保 log 輸出永遠不會中斷請求。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")  # Python 3.7+
+    except Exception:
+        pass
 import numpy as np
 import cv2
 import datetime
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, SecretStr
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -62,6 +73,26 @@ app.add_middleware(
 @app.get("/health")
 def health_check():
     return {"status": "ok", "version": "2.0.0", "ai_engine": "InsightFace buffalo_l"}
+
+
+# ── 404 友善訊息：列出目前可用路由，方便判斷「後端版本過舊未重啟」或「路徑拼錯」──
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404 and exc.detail == "Not Found":
+        available = sorted(
+            {r.path for r in app.routes if r.path.startswith("/api/")}
+        )
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": (
+                    f"後端找不到路由 {request.method} {request.url.path}。"
+                    "請確認路徑拼寫，或後端是否已重啟載入最新版程式（python start_server.py）。"
+                ),
+                "available_api_routes": available,
+            },
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # CPUExecutionProvider 確保跨平台相容性，GPU 環境可換成 CUDAExecutionProvider
 face_app = FaceAnalysis(providers=["CPUExecutionProvider"])

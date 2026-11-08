@@ -1,6 +1,6 @@
 # 📋 VERSION — 校園智慧點名系統版本記錄
 
-> **目前穩定版本：`v0.5.0`**
+> **目前穩定版本：`v0.5.1`**
 
 ---
 
@@ -31,6 +31,21 @@ gh-pages（生產發布）← 由 Vite build 產物自動推送，請勿手動�
 ---
 
 ## 📅 Change Log（變更歷史）
+
+---
+
+### v0.5.1 — 2026-11-08
+**fix: 修復「同步南台課表」顯示 Not Found (404) 與同步後 500 的問題，強化後端 404 與前端錯誤提示**
+
+| 類型 | 變更內容 |
+|------|---------|
+| `fix` | 查明 404 根因：本機執行中的舊版 uvicorn（`--reload` 殘留的孤兒工作程序）未載入新增的 `/api/sync-schedule` 路由；清除舊程序後重啟，路由已正確載入（前端 `${apiBase}/api/sync-schedule` 與後端路徑拼寫一致，並已帶 `ngrok-skip-browser-warning` Header） |
+| `fix` | `main.py`：修正 Windows cp950 主控台 `print()` 含 emoji 觸發 `UnicodeEncodeError`，導致課表寫入成功後 API 仍回 500；改為啟動時設定 stdout/stderr `errors='replace'` |
+| `feat` | `main.py`：新增 404 例外處理器，找不到路由時回傳清楚中文訊息與目前可用的 `/api/*` 路由清單，不再只回 `{"detail": "Not Found"}` |
+| `feat` | `ScheduleSyncModal.tsx`：當回應非 JSON（ngrok 隧道失效時的 HTML 404 頁）時，顯示「ngrok 隧道可能已失效，請重新執行 python start_server.py」提示 |
+| `fix` | `ScheduleSyncModal.tsx`：移除送出前依 `/health` 狀態的阻擋判斷，改由實際連線結果回報錯誤，避免誤擋 |
+
+> 🚀 同步部署至 `gh-pages`；後端須重啟 `python start_server.py`（同時更新 ngrok 網址至 Supabase `app_config`）
 
 ---
 
@@ -410,3 +425,4 @@ gh-pages（生產發布）← 由 Vite build 產物自動推送，請勿手動�
 | v0.4.4 | 2026-11-08 | 修復姓名欄位夾帶學號前綴（前端清洗 + 後端寫入正規化） |
 | v0.4.5 | 2026-11-08 | 移除學生端假資料 + 空狀態提示 + 下拉選項白底黑字 |
 | v0.5.0 | 2026-11-08 | 南台校務課表一鍵同步 + 依節次請假與教師審核連動 |
+| v0.5.1 | 2026-11-08 | 修復課表同步 404 / 500 + 後端 404 友善訊息 |

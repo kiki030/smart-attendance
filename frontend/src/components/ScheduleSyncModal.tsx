@@ -39,8 +39,14 @@ export default function ScheduleSyncModal({
         headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
         body: JSON.stringify({ account: account.trim(), password, role, user_id: userId }),
       })
-      const data = await res.json().catch(() => ({}))
+      const data = await res.json().catch(() => null)
       if (!res.ok) {
+        if (data === null) {
+          // 回應不是 JSON：多半是 ngrok 隧道已失效（ngrok 自己的 404/離線頁面）
+          throw new Error(
+            `後端無回應（HTTP ${res.status}）。ngrok 隧道可能已失效，請重新執行 python start_server.py 更新後端網址`
+          )
+        }
         const detail = typeof data?.detail === 'string' ? data.detail : `HTTP ${res.status}`
         throw new Error(detail)
       }
