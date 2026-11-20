@@ -1,4 +1,4 @@
-import { useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import type { AppUser, UserRoleType } from '../types'
@@ -12,16 +12,49 @@ interface Props {
 // 教師驗證碼從環境變數讀取，fallback 為 'STUST2024'（本地開發備援）
 const TEACHER_CODE = import.meta.env.VITE_TEACHER_CODE || 'STUST2024'
 
+// ── Google 帳號解析：南台網域信箱 -> 學號、姓名清洗 ──────────
+const STUST_DOMAINS = ['stust.edu.tw', 'g2.stust.edu.tw']
+const STUDENT_ID_PATTERN = /^[0-9][a-z0-9]{7}$/i
+
+export function parseStustEmail(email: string | undefined): string {
+  if (!email) return ''
+  const [local, domain] = email.toLowerCase().split('@')
+  if (!local || !STUST_DOMAINS.includes(domain)) return ''
+  return STUDENT_ID_PATTERN.test(local) ? local.toUpperCase() : ''
+}
+
+export function cleanName(fullName: string, studentId: string): string {
+  let name = (fullName || '').trim()
+  if (studentId && name.toUpperCase().startsWith(studentId.toUpperCase())) {
+    name = name.slice(studentId.length)
+  }
+  return name.trim()
+}
+
 export default function RoleSetup({ session, onSetup }: Props) {
   const [role, setRole] = useState<UserRoleType>('student')
-  const [studentId, setStudentId] = useState('')
-  const [studentName, setStudentName] = useState('')
+  const autoId = parseStustEmail(session.user.email)
+  const rawGoogleName: string = session.user.user_metadata?.full_name || session.user.user_metadata?.name || ''
+  const [studentId, setStudentId] = useState(autoId)
+  const [studentName, setStudentName] = useState(cleanName(rawGoogleName, autoId))
+  const [autoMode, setAutoMode] = useState(!!autoId && !session.user.email?.startsWith('demo_'))
+  const autoStarted = useRef(false)
   const [teacherCode, setTeacherCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const googleName = session.user.user_metadata?.full_name || session.user.email || ''
+  const googleName = cleanName(rawGoogleName, autoId) || session.user.email || ''
   const avatarUrl = session.user.user_metadata?.avatar_url || ''
+
+  // 南台學號信箱：自動建檔（短暫延遲，讓教師可點擊取消）
+  useEffect(() => {
+    if (!autoMode || autoStarted.current) return
+    const t = setTimeout(() => {
+      autoStarted.current = true
+      void handleSubmit()
+    }, 1200)
+    return () => clearTimeout(t)
+  }, [autoMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSubmit() {
     setError('')
@@ -92,11 +125,25 @@ export default function RoleSetup({ session, onSetup }: Props) {
             </div>
           </div>
 
+          {autoMode && (
+            <div style={{ textAlign: 'center', margin: '0.5rem 0 1rem' }}>
+              <p className="setup-hello">✅ 已自動辨識：{studentId} {studentName}</p>
+              <p className="setup-email">正在為您建立學生資料...</p>
+              <button
+                className="role-option"
+                style={{ margin: '0.75rem auto 0' }}
+                onClick={() => { setAutoMode(false); setRole('teacher') }}
+              >
+                我是教師，改選教師身分
+              </button>
+            </div>
+          )}
+
           <div className="badge login-badge">首次登入設定</div>
-          <h2 className="setup-title">請選擇您的身份</h2>
+          {!autoMode && <h2 className="setup-title">請選擇您的身份</h2>}
 
           {/* 角色切換 */}
-          <div className="role-toggle-group">
+          {!autoMode && <div className="role-toggle-group">
             <button
               className={`role-option ${role === 'student' ? 'active student-active' : ''}`}
               onClick={() => { setRole('student'); setError('') }}
@@ -111,10 +158,10 @@ export default function RoleSetup({ session, onSetup }: Props) {
               <span className="role-icon">👨‍🏫</span>
               <span>教師</span>
             </button>
-          </div>
+          </div>}
 
           {/* 條件輸入 */}
-          {role === 'student' && (
+          {!autoMode && role === 'student' && (
             <>
               <div className="setup-field">
                 <label className="setup-label">學號</label>
@@ -141,7 +188,7 @@ export default function RoleSetup({ session, onSetup }: Props) {
             </>
           )}
 
-          {role === 'teacher' && (
+          {!autoMode && role === 'teacher' && (
             <div className="setup-field">
               <label className="setup-label">教師驗證碼</label>
               <input
@@ -157,15 +204,16 @@ export default function RoleSetup({ session, onSetup }: Props) {
 
           {error && <p className="error-msg">⚠️ {error}</p>}
 
-          <button
+          {!autoMode && <button
             className="setup-submit-btn"
             onClick={handleSubmit}
             disabled={loading}
           >
             {loading ? '設定中...' : '確認身份並進入系統 →'}
-          </button>
+          </button>}
         </div>
       </div>
     </div>
   )
 }
+
