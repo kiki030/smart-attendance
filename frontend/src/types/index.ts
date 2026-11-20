@@ -93,7 +93,9 @@ export const LEAVE_STATUS_LABELS: Record<LeaveStatus, string> = {
 /** 解析節次字串（如 '2-4'、'3'、'第 2-4 節'）為起訖數字 */
 export function parsePeriodRange(period?: string | null): { start: number; end: number } {
   if (!period) return { start: 1, end: 1 }
-  const nums = (period.match(/\d+/g) || []).map(Number)
+  // 先移除括號內的時間（如 '第1節 (08:10~09:00)'），避免把時刻誤判為節次
+  const stripped = period.replace(/[(（][^)）]*[)）]/g, '')
+  const nums = (stripped.match(/\d+/g) || []).map(Number)
   if (nums.length === 0) return { start: 1, end: 1 }
   return { start: Math.min(...nums), end: Math.max(...nums) }
 }

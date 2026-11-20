@@ -9,3 +9,4 @@ insightface
 onnxruntime
 requests
 beautifulsoup4
+playwright

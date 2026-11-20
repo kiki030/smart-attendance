@@ -1,7 +1,9 @@
 from __future__ import annotations
 import os
+import re
 import sys
 import json
+import time
 
 # Windows 主控台常為 cp950，print() 含 emoji 會拋 UnicodeEncodeError 使 API 回 500；
 # 改為無法編碼的字元以 '?' 取代，確保 log 輸出永遠不會中斷請求。
@@ -21,12 +23,9 @@ from pydantic import BaseModel, SecretStr
 from supabase import create_client, Client
 from dotenv import load_dotenv
 from insightface.app import FaceAnalysis
-from schedule_service import (
-    ScheduleFetchError,
-    fetch_stust_schedule,
-    generate_demo_schedule,
-    is_demo_password,
-)
+from starlette.concurrency import run_in_threadpool
+from bs4 import BeautifulSoup
+from schedule_service import generate_demo_schedule
 
 # ── 載入環境變數 ──────────────────────────────────────────────
 load_dotenv()
@@ -568,16 +567,189 @@ async def roll_call(
 
 
 
+# ── 南台科大 ePortal 真實課表爬蟲（Playwright 同步版）──────────
+ESPORTAL_TIMETABLE_URL = "https://eportal.stust.edu.tw/CourSel/Pages/MyTimeTable.aspx?role={role_code}"
+ESPORTAL_TABLE_SELECTOR = "#ctl00_ContentPlaceHolder1_ScheduleList1_dg_dt"
+_LOGIN_FAIL_PATTERN = re.compile(
+    r"帳號或密碼|密碼錯誤|登入失敗|驗證失敗|認證失敗|invalid|incorrect|authentication failed|not valid",
+    re.I,
+)
+_PERIOD_LABEL_RE = re.compile(r"第\s*(\d+)\s*節")
+_PERIOD_TIME_RE = re.compile(r"(\d{1,2}:\d{2})\s*[~～\-–]\s*(\d{1,2}:\d{2})")
+
+
+def _cell_lines(td) -> list[str]:
+    """取出儲存格 <span>（若無則整格）內以 <br> / 換行分隔的非空行。"""
+    node = td.find("span") or td
+    for br in node.find_all("br"):
+        br.replace_with("\n")
+    return [ln.strip() for ln in node.get_text().splitlines() if ln.strip()]
+
+
+def parse_stust_timetable(html: str) -> list[dict]:
+    """解析 ePortal 課表表格 HTML，回傳 [{day_of_week, period, course_name, room}, ...]。"""
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.select_one(ESPORTAL_TABLE_SELECTOR) or soup
+    entries: list[dict] = []
+
+    for tr in table.find_all("tr"):
+        if tr.find("th"):  # 略過標題列
+            continue
+        tds = tr.find_all("td", recursive=False) or tr.find_all("td")
+        if len(tds) < 8:
+            continue
+        head_lines = _cell_lines(tds[0])
+        head_text = " ".join(head_lines).strip()
+        if not head_text:  # 例如第 9、11 節之間的空白列
+            continue
+
+        label = _PERIOD_LABEL_RE.search(head_text)
+        period_name = f"第{label.group(1)}節" if label else head_lines[0]
+        t = _PERIOD_TIME_RE.search(head_text)
+        period_str = f"{period_name} ({t.group(1)}~{t.group(2)})" if t else period_name
+
+        for day_idx in range(1, 8):
+            lines = _cell_lines(tds[day_idx])
+            if not lines:
+                continue
+            course_name = lines[0]
+            room = ""
+            if len(lines) > 1:
+                parts = lines[1].split()
+                room = parts[-1] if parts else ""
+            entries.append({
+                "day_of_week": day_idx,
+                "period": period_str,
+                "course_name": course_name,
+                "room": room,
+            })
+    return entries
+
+
+def _stust_login_error() -> HTTPException:
+    return HTTPException(status_code=401, detail="南台校務帳號或密碼錯誤，請重新確認")
+
+
+def fetch_stust_schedule_sync(account: str, password: str, role: str) -> list[dict]:
+    """
+    以 Playwright 同步 API 登入南台 NetIQ SSO，抓取 ePortal 課表。
+    須以 run_in_threadpool 呼叫（Windows 的 asyncio 事件迴圈不支援在其中啟動子行程）。
+    安全性：password 僅用於填入登入表單，不印出、不寫入資料庫、不放入例外訊息。
+    """
+    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+    role_code = "T" if role == "teacher" else "S"
+    target_url = ESPORTAL_TIMETABLE_URL.format(role_code=role_code)
+
+    def on_identity(page) -> bool:
+        return "identity.stust.edu.tw" in page.url
+
+    def table_ready(page) -> bool:
+        try:
+            return "eportal.stust.edu.tw" in page.url and page.locator(ESPORTAL_TABLE_SELECTOR).count() > 0
+        except Exception:
+            return False
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            context = browser.new_context(locale="zh-TW", ignore_https_errors=True)
+            page = context.new_page()
+            page.set_default_timeout(20000)
+
+            try:
+                page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            except PlaywrightTimeout:
+                raise HTTPException(status_code=504, detail="連線南台校務系統逾時，請稍後再試")
+
+            # ── 登入（若已被 SSO 導向登入頁）──
+            # NetIQ 登入表單位於巢狀 iframe（option=credential）內，需掃描所有 frame
+            def find_login_frame():
+                for fr in page.frames:
+                    try:
+                        if fr.locator('input[name="Ecom_Password"], input[type="password"]').count() > 0:
+                            return fr
+                    except Exception:
+                        continue
+                return None
+
+            if on_identity(page):
+                login_frame = None
+                for _ in range(30):  # 最多等 15 秒
+                    login_frame = find_login_frame()
+                    if login_frame:
+                        break
+                    page.wait_for_timeout(500)
+                if not login_frame:
+                    raise HTTPException(status_code=502, detail="無法載入南台登入頁面，請稍後再試")
+
+                user_input = login_frame.locator('input[name="Ecom_User_ID"]')
+                if user_input.count() == 0:
+                    user_input = login_frame.locator('input[type="text"]:visible')
+                pwd_input = login_frame.locator('input[name="Ecom_Password"]')
+                if pwd_input.count() == 0:
+                    pwd_input = login_frame.locator('input[type="password"]')
+
+                user_input.first.fill(account)
+                pwd_input.first.fill(password)
+
+                submit = login_frame.locator(
+                    '#loginButton2, input[name="loginButton2"], input[type="image"]:visible, '
+                    'input[type="submit"]:visible, button[type="submit"]:visible'
+                )
+                if submit.count() > 0:
+                    submit.first.click()
+                else:
+                    pwd_input.first.press("Enter")
+
+                # ── 等待跳轉回 ePortal 並出現課表表格（上限 20 秒）──
+                started = time.monotonic()
+                logged_in = False
+                while time.monotonic() - started < 20:
+                    if table_ready(page):
+                        logged_in = True
+                        break
+                    if "eportal.stust.edu.tw" in page.url:
+                        break  # 已回到 ePortal，後續再確認課表表格
+                    if on_identity(page) and time.monotonic() - started > 2:
+                        for fr in page.frames:
+                            try:
+                                if _LOGIN_FAIL_PATTERN.search(fr.content()):
+                                    raise _stust_login_error()
+                            except HTTPException:
+                                raise
+                            except Exception:
+                                pass  # frame 正在跳轉，下一輪再檢查
+                    page.wait_for_timeout(500)
+                if not logged_in and on_identity(page):
+                    raise _stust_login_error()
+
+            # 登入後若不在課表頁，再前往一次
+            if not table_ready(page):
+                if "eportal.stust.edu.tw" in page.url and "MyTimeTable" not in page.url:
+                    page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                try:
+                    page.wait_for_selector(ESPORTAL_TABLE_SELECTOR, timeout=20000)
+                except PlaywrightTimeout:
+                    if on_identity(page):
+                        raise _stust_login_error()
+                    raise HTTPException(status_code=502, detail="已登入但找不到課表表格，校務系統頁面可能已改版或暫時無法使用")
+
+            html = page.locator(ESPORTAL_TABLE_SELECTOR).first.evaluate("el => el.outerHTML")
+        finally:
+            browser.close()
+
+    return parse_stust_timetable(html)
+
+
 # ── 路由：南台校務課表一鍵同步 ────────────────────────────────
 @app.post("/api/sync-schedule")
-def sync_schedule(payload: ScheduleSyncRequest):
+async def sync_schedule(payload: ScheduleSyncRequest):
     """
     接收 { account, password, role, user_id }，取得本學期課表並寫入 Supabase user_schedules。
 
-    取得方式：
-      1. 密碼為測試碼（demo / test …）→ 直接產生示範課表
-      2. 否則嘗試 fetch_stust_schedule() 登入校務系統抓取
-      3. 若未設定端點、需要驗證碼、連線失敗或解析不到 → 改用示範課表
+    - 密碼為 demo（不分大小寫）→ 回傳示範課表（發表展示用）
+    - 其他密碼 → 一律執行 Playwright 真實爬蟲；失敗時回傳明確錯誤，不會退回假課表
 
     安全性：密碼只在本函式記憶體中短暫使用，不寫入資料庫、不印出 log、不回傳前端。
     """
@@ -588,29 +760,33 @@ def sync_schedule(payload: ScheduleSyncRequest):
     if not account or not user_id:
         raise HTTPException(status_code=400, detail="帳號與使用者識別碼不可為空")
 
-    source = "demo"
-    notice = ""
-    entries: list[dict] = []
-
     password = payload.password.get_secret_value()
     try:
-        if is_demo_password(password):
-            notice = "偵測到測試密碼，已產生示範課表"
+        if password.strip().lower() == "demo":
+            source = "demo"
+            message = "展示模式：已產生示範課表"
+            entries = generate_demo_schedule(account, role)
         else:
-            entries = fetch_stust_schedule(account, password)
-            source = "stust"
-            notice = "已成功從南台校務系統同步課表"
-    except ScheduleFetchError as e:
-        notice = f"{e}，已改用示範課表"
-    except Exception as e:
-        # 只記錄例外類型，避免任何可能含帳密的內容進入 log
-        print(f"    ⚠️ 校務系統課表抓取發生未預期錯誤：{type(e).__name__}")
-        notice = "連線校務系統時發生未預期錯誤，已改用示範課表"
+            source = "stust_eportal"
+            message = "已成功從南台 ePortal 同步課表"
+            try:
+                entries = await run_in_threadpool(fetch_stust_schedule_sync, account, password, role)
+            except HTTPException:
+                raise
+            except Exception as e:
+                # 只記錄例外類型，避免任何可能含帳密的內容進入 log
+                print(f"    ⚠️ 南台 ePortal 課表抓取失敗：{type(e).__name__}")
+                if "Executable doesn't exist" in str(e):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="伺服器尚未安裝 Chromium，請在後端執行：python -m playwright install chromium",
+                    )
+                raise HTTPException(status_code=502, detail="連線南台校務系統失敗，請稍後再試")
     finally:
         password = ""  # 用完立即清除區域變數
 
-    if source == "demo":
-        entries = generate_demo_schedule(account, role)
+    if not entries:
+        raise HTTPException(status_code=404, detail="已登入但本學期查無課表資料")
 
     synced_at = datetime.datetime.now().astimezone().isoformat()
     rows = [
@@ -635,7 +811,7 @@ def sync_schedule(payload: ScheduleSyncRequest):
     try:
         # 先清除該使用者的舊課表，再批次寫入新課表
         supabase.table("user_schedules").delete().eq("user_id", user_id).execute()
-        inserted = supabase.table("user_schedules").insert(rows).execute() if rows else None
+        inserted = supabase.table("user_schedules").insert(rows).execute()
     except Exception as e_db:
         print(f"    ⚠️ 寫入 user_schedules 失敗：{e_db}")
         raise HTTPException(
@@ -643,12 +819,14 @@ def sync_schedule(payload: ScheduleSyncRequest):
             detail="課表寫入資料庫失敗，請確認 Supabase 已建立 user_schedules 資料表",
         )
 
-    print(f"    📅 課表同步完成：user_id={user_id} role={role} source={source} 共 {len(rows)} 門")
+    schedules = inserted.data if inserted and inserted.data else rows
+    print(f"    📅 課表同步完成：user_id={user_id} role={role} source={source} 共 {len(rows)} 筆")
 
     return {
         "status": "success",
         "source": source,
-        "message": notice,
+        "message": message,
         "count": len(rows),
-        "schedule": (inserted.data if inserted and inserted.data else rows),
+        "schedules": schedules,
+        "schedule": schedules,  # 相容舊版前端欄位
     }
