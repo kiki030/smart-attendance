@@ -1,6 +1,10 @@
 # 🎓 校園智慧點名系統
 ### Smart Attendance System — 南臺科技大學資訊工程系畢業專題
 
+[![線上體驗](https://img.shields.io/badge/Live_Demo-前往系統網頁-2ea44f?style=for-the-badge&logo=githubpages)](https://kiki030.github.io/smart-attendance/)
+
+> 🌐 **線上展示網址**：[https://kiki030.github.io/smart-attendance/](https://kiki030.github.io/smart-attendance/)
+
 [![GitHub Pages](https://img.shields.io/badge/GitHub%20Pages-Live-brightgreen?logo=github)](https://kiki030.github.io/smart-attendance/)
 [![FastAPI](https://img.shields.io/badge/Backend-FastAPI%202.0-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/Frontend-React%2019-61DAFB?logo=react)](https://react.dev/)
