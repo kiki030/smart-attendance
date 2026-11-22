@@ -573,6 +573,9 @@ ESPORTAL_TIMETABLE_URL = "https://eportal.stust.edu.tw/CourSel/Pages/MyTimeTable
 ESPORTAL_TABLE_SELECTOR = "#ctl00_ContentPlaceHolder1_ScheduleList1_dg_dt"
 STUST_IDENTITY_HOST = "identity.stust.edu.tw"
 STUST_ESPORTAL_HOST = "eportal.stust.edu.tw"
+# 攔截無用靜態資源以加速載入；document / script / xhr / fetch 一律放行，避免影響 SSO 與 ASP.NET 轉址
+_BLOCKED_RESOURCE_TYPES = {"image", "stylesheet", "font", "media"}
+_CHROMIUM_ARGS = ["--disable-gpu", "--disable-extensions", "--disable-dev-shm-usage", "--no-sandbox"]
 STUST_DEBUG_SHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_stust_last.png")
 # 只比對登入頁「可見文字」，避免被 script / 隱藏欄位中的字樣誤判
 _LOGIN_FAIL_PATTERN = re.compile(
@@ -646,6 +649,23 @@ def _stust_login_error() -> HTTPException:
 
 class _BadCredentials(Exception):
     """登入頁確實顯示了錯誤提示（內部使用，不含帳密）。"""
+
+
+def _log_stage(stage: str, started: float) -> float:
+    """印出階段耗時（秒）並回傳目前時間。僅輸出階段名稱與秒數，絕不含帳密。"""
+    now = time.monotonic()
+    print(f"    ⏱️ [課表同步] {stage}：{now - started:.2f}s")
+    return now
+
+
+def _route_filter(route) -> None:
+    try:
+        if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+            route.abort()
+        else:
+            route.continue_()
+    except Exception:
+        pass  # 頁面已關閉等情況，忽略
 
 
 def _host_of(url: str) -> str:
@@ -749,13 +769,20 @@ def fetch_stust_schedule_sync(account: str, password: str, role: str) -> list[di
         if on_eportal(page):
             return  # 已有 SSO session，不需登入
 
-        login_frame = None
-        for _ in range(40):  # 最多等 20 秒
+        # 登入表單在巢狀 iframe 內：frame 一有導覽事件就立即重新檢查（事件驅動，無固定 sleep）
+        login_frame = find_login_frame(page)
+        form_deadline = time.monotonic() + 20
+        while not login_frame and time.monotonic() < form_deadline:
+            try:
+                page.wait_for_event("framenavigated", timeout=1000)
+            except PlaywrightTimeout:
+                pass
             login_frame = find_login_frame(page)
-            if login_frame:
-                break
-            page.wait_for_timeout(500)
         if not login_frame:
+            raise stuck(page, "等待登入表單載入")
+        try:
+            login_frame.wait_for_selector('input[name="Ecom_Password"], input[type="password"]', timeout=10000)
+        except PlaywrightTimeout:
             raise stuck(page, "等待登入表單載入")
 
         user_input = login_frame.locator('input[name="Ecom_User_ID"]')
@@ -775,10 +802,14 @@ def fetch_stust_schedule_sync(account: str, password: str, role: str) -> list[di
         for sel in _LOGIN_SUBMIT_SELECTORS:
             try:
                 btn = login_frame.locator(sel)
-                if btn.count() > 0 and btn.first.is_visible():
+                if btn.count() == 0:
+                    continue
+                if btn.first.is_visible():
                     btn.first.click(timeout=10000)
-                    clicked = True
-                    break
+                else:
+                    btn.first.evaluate("el => el.click()")  # 影像被攔截時按鈕可能無尺寸
+                clicked = True
+                break
             except Exception:
                 continue
         if not clicked:
@@ -796,12 +827,15 @@ def fetch_stust_schedule_sync(account: str, password: str, role: str) -> list[di
                 raise _BadCredentials()
         raise stuck(page, "等待跳回 ePortal（SSO 轉址逾時）")
 
+    t0 = time.monotonic()
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(headless=True, args=_CHROMIUM_ARGS)
         try:
             context = browser.new_context(locale="zh-TW", ignore_https_errors=True)
+            context.route("**/*", _route_filter)
             page = context.new_page()
             page.set_default_timeout(20000)
+            t1 = _log_stage("啟動瀏覽器", t0)
 
             bad_credentials = True
             for idx, user in enumerate(candidates):
@@ -815,6 +849,7 @@ def fetch_stust_schedule_sync(account: str, password: str, role: str) -> list[di
                     continue
             if bad_credentials:
                 raise _stust_login_error()
+            t2 = _log_stage("SSO 登入", t1)
 
             # 已進入 ePortal（可能停在 MenuTop.aspx 等頁）：若沒有課表表格，強制前往課表頁
             if not table_ready(page):
@@ -828,10 +863,13 @@ def fetch_stust_schedule_sync(account: str, password: str, role: str) -> list[di
                     raise stuck(page, "等待課表表格出現")
 
             html = page.locator(ESPORTAL_TABLE_SELECTOR).first.evaluate("el => el.outerHTML")
+            t3 = _log_stage("前往課表頁並取得表格", t2)
         finally:
             browser.close()
 
-    return parse_stust_timetable(html)
+    entries = parse_stust_timetable(html)
+    _log_stage("解析課表", t3)
+    return entries
 
 
 # ── 路由：南台校務課表一鍵同步 ────────────────────────────────
@@ -902,8 +940,10 @@ async def sync_schedule(payload: ScheduleSyncRequest):
 
     try:
         # 先清除該使用者的舊課表，再批次寫入新課表
+        t_db = time.monotonic()
         supabase.table("user_schedules").delete().eq("user_id", user_id).execute()
         inserted = supabase.table("user_schedules").insert(rows).execute()
+        _log_stage("寫入資料庫", t_db)
     except Exception as e_db:
         print(f"    ⚠️ 寫入 user_schedules 失敗：{e_db}")
         raise HTTPException(

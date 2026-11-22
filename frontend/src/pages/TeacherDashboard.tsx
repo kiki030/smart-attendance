@@ -528,6 +528,7 @@ export default function TeacherDashboard({ user }: Props) {
       if (updateLeaveErr) throw updateLeaveErr
 
       // 2. 若為「核准」，自動同步寫入 / 更新 attendance_records
+      //    （支援事後請假：即使該生當天原本已被標為 absent，也會覆蓋為 excused_sick / excused_personal）
       if (decision === 'approved') {
         const { data: existingAtt, error: findErr } = await supabase
           .from('attendance_records')
@@ -535,10 +536,10 @@ export default function TeacherDashboard({ user }: Props) {
           .eq('student_id', req.student_id)
           .eq('course_name', req.course_name)
           .eq('date', req.leave_date)
-          .limit(1)
         if (findErr) throw findErr
 
         if (existingAtt && existingAtt.length > 0) {
+          // 同一天同一課程若有多筆紀錄，一併改為請假，避免殘留 absent
           const { error: attUpdErr } = await supabase
             .from('attendance_records')
             .update({
@@ -546,7 +547,7 @@ export default function TeacherDashboard({ user }: Props) {
               note: req.reason,
               updated_at: nowIso,
             })
-            .eq('id', existingAtt[0].id)
+            .in('id', existingAtt.map(r => r.id))
           if (attUpdErr) throw attUpdErr
         } else {
           const { error: attInsErr } = await supabase
@@ -689,7 +690,7 @@ export default function TeacherDashboard({ user }: Props) {
 
           {syncNotice && (
             <div className="sync-notice-banner" style={{ marginTop: '0.85rem' }}>
-              <span>{syncNotice.source === 'stust' ? '🏫' : '✨'}</span>
+              <span>{syncNotice.source !== 'demo' ? '🏫' : '✨'}</span>
               <span>{syncNotice.message}</span>
             </div>
           )}

@@ -6,9 +6,11 @@ import { supabase } from '../lib/supabase'
 import type {
   AppUser, AttendanceRecord, LeaveRequest, LeaveType, ScheduleEntry, ScheduleSource, ScheduleSyncResult,
 } from '../types'
-import { LEAVE_STATUS_LABELS, LEAVE_TYPE_LABELS, WEEKDAY_LABELS, formatPeriod, parsePeriodRange } from '../types'
+import { LEAVE_STATUS_LABELS, LEAVE_TYPE_LABELS, WEEKDAY_LABELS, formatPeriod } from '../types'
 import { useApiBase } from '../hooks/useApiBase'
-import { errorMessage, nextDateForWeekday, weekdayOf } from '../lib/utils'
+import { errorMessage, nextDateForWeekday, toLocalDateStr, weekdayOf } from '../lib/utils'
+import { mergeSchedule, normalizeCourseName, timeToDate, todayDayOfWeek } from '../lib/schedule'
+import type { MergedCourse } from '../lib/schedule'
 import ScheduleSyncModal from '../components/ScheduleSyncModal'
 import ScheduleGrid from '../components/ScheduleGrid'
 import '../App.css'
@@ -16,6 +18,25 @@ import '../App.css'
 interface Props { user: AppUser }
 
 interface PieData { name: string; value: number; color: string }
+
+// 今日課程的 5 種出席狀態
+type TodayState = 'excused' | 'present' | 'late' | 'absent' | 'pending'
+
+const TODAY_STATE_CONFIG: Record<TodayState, { label: string; color: string; bg: string; icon: string }> = {
+  excused: { label: '請假', color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', icon: '📝' },
+  present: { label: '已完成簽到', color: '#4ade80', bg: 'rgba(74,222,128,0.12)', icon: '✅' },
+  late: { label: '遲到', color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', icon: '🟡' },
+  absent: { label: '缺席', color: '#f87171', bg: 'rgba(248,113,113,0.12)', icon: '❌' },
+  pending: { label: '還未簽到', color: '#94a3b8', bg: 'rgba(148,163,184,0.10)', icon: '⏳' },
+}
+
+interface TodayCourseStatus {
+  course: MergedCourse
+  state: TodayState
+  record?: AttendanceRecord
+  leaveType?: LeaveType
+  leaveReason?: string
+}
 
 // 課表項目的唯一鍵（下拉選單用）
 const slotKey = (e: ScheduleEntry) => `${e.course_name}|${e.day_of_week}|${e.period}`
@@ -29,7 +50,8 @@ export default function StudentDashboard({ user }: Props) {
 
   // ── 課表同步 ───────────────────────────────────────────
   const scheduleUserId = user.studentId || user.email
-  const [schedule, setSchedule] = useState<ScheduleEntry[]>([])
+  const [schedule, setSchedule] = useState<MergedCourse[]>([])
+  const [scheduleLoaded, setScheduleLoaded] = useState(false)
   const [syncOpen, setSyncOpen] = useState(false)
   const [syncNotice, setSyncNotice] = useState<{ source: ScheduleSource; message: string } | null>(null)
 
@@ -57,12 +79,12 @@ export default function StudentDashboard({ user }: Props) {
       .order('day_of_week', { ascending: true })
     if (error) {
       console.error('loadSchedule error:', error)
+      setScheduleLoaded(true)
       return
     }
-    const sorted = ((data ?? []) as ScheduleEntry[]).sort(
-      (a, b) => a.day_of_week - b.day_of_week || parsePeriodRange(a.period).start - parsePeriodRange(b.period).start
-    )
-    setSchedule(sorted)
+    // 同一門課的連續節次合併為單一區塊（含最終下課時間）
+    setSchedule(mergeSchedule((data ?? []) as ScheduleEntry[]))
+    setScheduleLoaded(true)
   }, [scheduleUserId])
 
   const loadLeaves = useCallback(async () => {
@@ -158,11 +180,15 @@ export default function StudentDashboard({ user }: Props) {
   }
 
   useEffect(() => {
-    if (user.studentId) loadAttendance()
-    else {
+    if (!user.studentId) {
       // 無學號：直接顯示空狀態，不填入假資料
       setLoading(false)
+      return
     }
+    loadAttendance()
+    // 定期重新讀取，讓教師點名 / 核准請假後學生端即時更新
+    const t = setInterval(() => { loadAttendance(); loadLeaves() }, 15000)
+    return () => clearInterval(t)
   }, [user.studentId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadAttendance() {
@@ -183,9 +209,36 @@ export default function StudentDashboard({ user }: Props) {
     }
   }
 
-  const today = new Date().toISOString().slice(0, 10)
-  const todayRecord = records.find(r => r.date === today)
-  const todayStatus = todayRecord?.status || 'absent'
+  // ── 今日課程與 5 種出席狀態（依優先順序判定）──────────────
+  // 1 請假 → 2 已完成簽到 → 3 遲到 → 4 缺席（教師標記 / 已過下課時間且無紀錄）→ 5 還未簽到
+  const todayStr = toLocalDateStr(time)
+  const todayCourses: TodayCourseStatus[] = schedule
+    .filter(c => c.day_of_week === todayDayOfWeek(time))
+    .map(course => {
+      const name = normalizeCourseName(course.course_name)
+      const recs = records.filter(r => r.date === todayStr && normalizeCourseName(r.course_name) === name)
+      const approvedLeave = leaves.find(
+        l => l.status === 'approved' && l.leave_date === todayStr && normalizeCourseName(l.course_name) === name
+      )
+      const excusedRec = recs.find(r => r.status === 'excused_sick' || r.status === 'excused_personal')
+      const presentRec = recs.find(r => r.status === 'present')
+      const lateRec = recs.find(r => r.status === 'late')
+      const absentRec = recs.find(r => r.status === 'absent')
+      const endAt = timeToDate(course.endTime, time)
+      const classEnded = endAt ? time.getTime() > endAt.getTime() : false
+
+      if (excusedRec || approvedLeave) {
+        return {
+          course, state: 'excused' as const, record: excusedRec,
+          leaveType: (excusedRec?.status as LeaveType | undefined) ?? approvedLeave?.leave_type,
+          leaveReason: excusedRec?.note || approvedLeave?.reason,
+        }
+      }
+      if (presentRec) return { course, state: 'present' as const, record: presentRec }
+      if (lateRec) return { course, state: 'late' as const, record: lateRec }
+      if (absentRec || classEnded) return { course, state: 'absent' as const, record: absentRec }
+      return { course, state: 'pending' as const }
+    })
 
   // Pie chart data（僅保留出席/遲到/缺席）
   const present = records.filter(r => r.status === 'present').length
@@ -203,15 +256,6 @@ export default function StudentDashboard({ user }: Props) {
     await supabase.auth.signOut().catch(() => {})
     window.location.reload()
   }
-
-  const statusConfig = {
-    present: { label: '已出席', color: '#4ade80', bg: 'rgba(74,222,128,0.12)', icon: '✅' },
-    late: { label: '遲到', color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', icon: '🟡' },
-    absent: { label: '缺席', color: '#f87171', bg: 'rgba(248,113,113,0.12)', icon: '❌' },
-    excused_sick: { label: '病假', color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', icon: '💊' },
-    excused_personal: { label: '事假', color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', icon: '📋' },
-  }
-  const todayConfig = statusConfig[todayStatus as keyof typeof statusConfig] || statusConfig.absent
 
   return (
     <div className="dashboard-root">
@@ -254,23 +298,54 @@ export default function StudentDashboard({ user }: Props) {
         {/* 今日出勤狀態卡片 */}
         <div className="today-section">
           <h2 className="section-title-lg">今日出勤狀態</h2>
-          <div className="today-cards">
-            <div
-              className="today-main-card"
-              style={{ borderColor: todayConfig.color, background: todayConfig.bg }}
-            >
-              <div className="today-icon">{todayConfig.icon}</div>
-              <div className="today-status-text" style={{ color: todayConfig.color }}>
-                {todayConfig.label}
-              </div>
-              <div className="today-course">{todayRecord?.course_name || '人工智慧概論'}</div>
-              {todayRecord?.check_in_time && (
-                <div className="today-time">
-                  簽到時間：{new Date(todayRecord.check_in_time).toLocaleTimeString('zh-TW')}
-                </div>
-              )}
-            </div>
 
+          {!scheduleLoaded ? (
+            <div className="chart-loading"><div className="spinner" /></div>
+          ) : schedule.length === 0 ? (
+            <div className="empty-state-box">
+              <div style={{ fontSize: '2.2rem' }}>🗓️</div>
+              <div style={{ fontSize: '0.98rem', fontWeight: 600, color: '#94a3b8' }}>
+                尚未同步課表，請先同步南台校務課表
+              </div>
+            </div>
+          ) : todayCourses.length === 0 ? (
+            <div className="empty-state-box">
+              <div style={{ fontSize: '2.2rem' }}>🎉</div>
+              <div style={{ fontSize: '0.98rem', fontWeight: 600, color: '#94a3b8' }}>今日無排課</div>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '1rem' }}>
+              {todayCourses.map(({ course, state, record, leaveType, leaveReason }) => {
+                const cfg = TODAY_STATE_CONFIG[state]
+                return (
+                  <div
+                    key={slotKey(course)}
+                    className="today-main-card"
+                    style={{ borderColor: cfg.color, background: cfg.bg }}
+                  >
+                    <div className="today-icon">{cfg.icon}</div>
+                    <div className="today-status-text" style={{ color: cfg.color }}>{cfg.label}</div>
+                    <div className="today-course">{course.course_name}</div>
+                    <div className="today-time">
+                      {course.period}{course.room ? ` · ${course.room}` : ''}
+                    </div>
+                    {state === 'excused' && leaveType && (
+                      <div className="today-time">
+                        {LEAVE_TYPE_LABELS[leaveType]}{leaveReason ? `：${leaveReason}` : ''}
+                      </div>
+                    )}
+                    {record?.check_in_time && (state === 'present' || state === 'late') && (
+                      <div className="today-time">
+                        簽到時間：{new Date(record.check_in_time).toLocaleTimeString('zh-TW')}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          <div className="today-cards" style={{ marginTop: '1rem' }}>
             <div className="today-stats-mini">
               <div className="mini-stat" style={{ borderColor: '#4ade80' }}>
                 <span className="mini-num" style={{ color: '#4ade80' }}>{present}</span>
@@ -304,7 +379,7 @@ export default function StudentDashboard({ user }: Props) {
 
           {syncNotice && (
             <div className="sync-notice-banner">
-              <span>{syncNotice.source === 'stust' ? '🏫' : '✨'}</span>
+              <span>{syncNotice.source !== 'demo' ? '🏫' : '✨'}</span>
               <span>{syncNotice.message}</span>
             </div>
           )}
@@ -537,7 +612,7 @@ export default function StudentDashboard({ user }: Props) {
                   {records.slice(0, 10).map(rec => (
                     <tr key={rec.id}>
                       <td>{rec.date}</td>
-                      <td>{rec.course_name || '人工智慧概論'}</td>
+                      <td>{rec.course_name || '—'}</td>
                       <td>
                         <span className={`status-chip chip-${rec.status}`}>
                           {rec.status === 'present' && '✅ 出席'}

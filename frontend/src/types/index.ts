@@ -37,7 +37,7 @@ export const STATUS_LABELS: Record<AttendanceRecord['status'], string> = {
 }
 
 // ── 課表同步 ────────────────────────────────────────────────
-export type ScheduleSource = 'stust' | 'demo'
+export type ScheduleSource = 'stust_eportal' | 'stust' | 'demo'
 
 export interface ScheduleEntry {
   id?: string
