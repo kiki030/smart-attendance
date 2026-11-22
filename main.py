@@ -4,6 +4,7 @@ import re
 import sys
 import json
 import time
+from urllib.parse import urlparse
 
 # Windows 主控台常為 cp950，print() 含 emoji 會拋 UnicodeEncodeError 使 API 回 500；
 # 改為無法編碼的字元以 '?' 取代，確保 log 輸出永遠不會中斷請求。
@@ -570,10 +571,23 @@ async def roll_call(
 # ── 南台科大 ePortal 真實課表爬蟲（Playwright 同步版）──────────
 ESPORTAL_TIMETABLE_URL = "https://eportal.stust.edu.tw/CourSel/Pages/MyTimeTable.aspx?role={role_code}"
 ESPORTAL_TABLE_SELECTOR = "#ctl00_ContentPlaceHolder1_ScheduleList1_dg_dt"
+STUST_IDENTITY_HOST = "identity.stust.edu.tw"
+STUST_ESPORTAL_HOST = "eportal.stust.edu.tw"
+STUST_DEBUG_SHOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_stust_last.png")
+# 只比對登入頁「可見文字」，避免被 script / 隱藏欄位中的字樣誤判
 _LOGIN_FAIL_PATTERN = re.compile(
-    r"帳號或密碼|密碼錯誤|登入失敗|驗證失敗|認證失敗|invalid|incorrect|authentication failed|not valid",
+    r"失敗|錯誤|Invalid|Login failed|incorrect|not valid|Authentication failed|unsuccessful",
     re.I,
 )
+_LOGIN_SUBMIT_SELECTORS = [
+    "#loginButton2",
+    'input[name*="login" i]',
+    'input[type="submit"]',
+    'button[type="submit"]',
+    'input[type="image"]',
+    'button:has-text("登入")',
+    'input[value*="登入"]',
+]
 _PERIOD_LABEL_RE = re.compile(r"第\s*(\d+)\s*節")
 _PERIOD_TIME_RE = re.compile(r"(\d{1,2}:\d{2})\s*[~～\-–]\s*(\d{1,2}:\d{2})")
 
@@ -630,25 +644,157 @@ def _stust_login_error() -> HTTPException:
     return HTTPException(status_code=401, detail="南台校務帳號或密碼錯誤，請重新確認")
 
 
+class _BadCredentials(Exception):
+    """登入頁確實顯示了錯誤提示（內部使用，不含帳密）。"""
+
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
 def fetch_stust_schedule_sync(account: str, password: str, role: str) -> list[dict]:
     """
     以 Playwright 同步 API 登入南台 NetIQ SSO，抓取 ePortal 課表。
     須以 run_in_threadpool 呼叫（Windows 的 asyncio 事件迴圈不支援在其中啟動子行程）。
-    安全性：password 僅用於填入登入表單，不印出、不寫入資料庫、不放入例外訊息。
+
+    - 401：只有登入頁（含所有 iframe）確實出現錯誤提示文字時才回傳。
+    - 502：逾時 / 找不到按鈕 / 停在其他頁面，訊息附上卡住的步驟、網域與頁面標題，
+           並於失敗時存 debug_stust_last.png（存圖前會先清空密碼欄位）。
+    - 安全性：password 僅用於填入登入表單，不印出、不寫入資料庫、不放入例外訊息或 log。
     """
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
     role_code = "T" if role == "teacher" else "S"
     target_url = ESPORTAL_TIMETABLE_URL.format(role_code=role_code)
 
+    # 先用輸入值；若登入頁明確回報錯誤，再以小寫重試一次（南台帳號可能區分大小寫）
+    candidates = [account]
+    if account.lower() != account:
+        candidates.append(account.lower())
+
     def on_identity(page) -> bool:
-        return "identity.stust.edu.tw" in page.url
+        return _host_of(page.url) == STUST_IDENTITY_HOST
+
+    def on_eportal(page) -> bool:
+        return _host_of(page.url) == STUST_ESPORTAL_HOST
 
     def table_ready(page) -> bool:
         try:
-            return "eportal.stust.edu.tw" in page.url and page.locator(ESPORTAL_TABLE_SELECTOR).count() > 0
+            return on_eportal(page) and page.locator(ESPORTAL_TABLE_SELECTOR).count() > 0
         except Exception:
             return False
+
+    def page_title(page) -> str:
+        try:
+            return page.title()
+        except Exception:
+            return "?"
+
+    def save_debug(page) -> None:
+        """失敗時存截圖；先把所有 frame 內的密碼欄位清空，避免任何密碼殘留於畫面。"""
+        try:
+            for fr in page.frames:
+                try:
+                    fr.evaluate(
+                        "document.querySelectorAll('input[type=password]').forEach(e => e.value = '')"
+                    )
+                except Exception:
+                    pass
+            page.screenshot(path=STUST_DEBUG_SHOT, full_page=True)
+        except Exception:
+            pass
+
+    def stuck(page, step: str) -> HTTPException:
+        host, title = _host_of(page.url) or "?", page_title(page)
+        print(f"    ⚠️ 南台課表同步卡住：step={step} host={host} title={title}")
+        save_debug(page)
+        return HTTPException(
+            status_code=502,
+            detail=(
+                f"南台課表同步失敗：卡在「{step}」（目前網域：{host}，頁面標題：{title}）。"
+                "已儲存 debug_stust_last.png 供檢查，請稍後再試"
+            ),
+        )
+
+    def find_login_frame(page):
+        for fr in page.frames:
+            try:
+                if fr.locator('input[name="Ecom_Password"], input[type="password"]').count() > 0:
+                    return fr
+            except Exception:
+                continue
+        return None
+
+    def login_error_visible(page) -> bool:
+        """登入頁（含所有 iframe）的可見文字是否出現錯誤提示。"""
+        for fr in page.frames:
+            try:
+                text = fr.locator("body").inner_text(timeout=1500)
+            except Exception:
+                continue  # frame 正在跳轉 / 已卸載
+            if _LOGIN_FAIL_PATTERN.search(text or ""):
+                return True
+        return False
+
+    def attempt_login(page, user: str) -> None:
+        """在登入頁填表並明確點擊登入按鈕；成功跳回 ePortal 網域即返回。"""
+        try:
+            page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+        except PlaywrightTimeout:
+            raise stuck(page, "開啟課表網址")
+
+        if on_eportal(page):
+            return  # 已有 SSO session，不需登入
+
+        login_frame = None
+        for _ in range(40):  # 最多等 20 秒
+            login_frame = find_login_frame(page)
+            if login_frame:
+                break
+            page.wait_for_timeout(500)
+        if not login_frame:
+            raise stuck(page, "等待登入表單載入")
+
+        user_input = login_frame.locator('input[name="Ecom_User_ID"]')
+        if user_input.count() == 0:
+            user_input = login_frame.locator('input[type="text"]:visible')
+        pwd_input = login_frame.locator('input[name="Ecom_Password"]')
+        if pwd_input.count() == 0:
+            pwd_input = login_frame.locator('input[type="password"]')
+        if user_input.count() == 0 or pwd_input.count() == 0:
+            raise stuck(page, "尋找帳號 / 密碼欄位")
+
+        user_input.first.fill(user)
+        pwd_input.first.fill(password)
+
+        # 在同一個 frame 內明確尋找並點擊登入按鈕；找不到才退回 Enter
+        clicked = False
+        for sel in _LOGIN_SUBMIT_SELECTORS:
+            try:
+                btn = login_frame.locator(sel)
+                if btn.count() > 0 and btn.first.is_visible():
+                    btn.first.click(timeout=10000)
+                    clicked = True
+                    break
+            except Exception:
+                continue
+        if not clicked:
+            pwd_input.first.press("Enter")
+
+        # 等待真正跳回 ePortal 網域（上限 20 秒）；每 1.5 秒檢查一次是否出現真正的錯誤提示
+        started = time.monotonic()
+        while time.monotonic() - started < 20:
+            try:
+                page.wait_for_url(lambda u: _host_of(u) == STUST_ESPORTAL_HOST, timeout=1500)
+                return
+            except PlaywrightTimeout:
+                pass
+            if on_identity(page) and time.monotonic() - started > 2 and login_error_visible(page):
+                raise _BadCredentials()
+        raise stuck(page, "等待跳回 ePortal（SSO 轉址逾時）")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -657,83 +803,29 @@ def fetch_stust_schedule_sync(account: str, password: str, role: str) -> list[di
             page = context.new_page()
             page.set_default_timeout(20000)
 
-            try:
-                page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-            except PlaywrightTimeout:
-                raise HTTPException(status_code=504, detail="連線南台校務系統逾時，請稍後再試")
+            bad_credentials = True
+            for idx, user in enumerate(candidates):
+                try:
+                    attempt_login(page, user)
+                    bad_credentials = False
+                    break
+                except _BadCredentials:
+                    # 清掉 SSO 殘留狀態，換下一個帳號寫法重試
+                    context.clear_cookies()
+                    continue
+            if bad_credentials:
+                raise _stust_login_error()
 
-            # ── 登入（若已被 SSO 導向登入頁）──
-            # NetIQ 登入表單位於巢狀 iframe（option=credential）內，需掃描所有 frame
-            def find_login_frame():
-                for fr in page.frames:
-                    try:
-                        if fr.locator('input[name="Ecom_Password"], input[type="password"]').count() > 0:
-                            return fr
-                    except Exception:
-                        continue
-                return None
-
-            if on_identity(page):
-                login_frame = None
-                for _ in range(30):  # 最多等 15 秒
-                    login_frame = find_login_frame()
-                    if login_frame:
-                        break
-                    page.wait_for_timeout(500)
-                if not login_frame:
-                    raise HTTPException(status_code=502, detail="無法載入南台登入頁面，請稍後再試")
-
-                user_input = login_frame.locator('input[name="Ecom_User_ID"]')
-                if user_input.count() == 0:
-                    user_input = login_frame.locator('input[type="text"]:visible')
-                pwd_input = login_frame.locator('input[name="Ecom_Password"]')
-                if pwd_input.count() == 0:
-                    pwd_input = login_frame.locator('input[type="password"]')
-
-                user_input.first.fill(account)
-                pwd_input.first.fill(password)
-
-                submit = login_frame.locator(
-                    '#loginButton2, input[name="loginButton2"], input[type="image"]:visible, '
-                    'input[type="submit"]:visible, button[type="submit"]:visible'
-                )
-                if submit.count() > 0:
-                    submit.first.click()
-                else:
-                    pwd_input.first.press("Enter")
-
-                # ── 等待跳轉回 ePortal 並出現課表表格（上限 20 秒）──
-                started = time.monotonic()
-                logged_in = False
-                while time.monotonic() - started < 20:
-                    if table_ready(page):
-                        logged_in = True
-                        break
-                    if "eportal.stust.edu.tw" in page.url:
-                        break  # 已回到 ePortal，後續再確認課表表格
-                    if on_identity(page) and time.monotonic() - started > 2:
-                        for fr in page.frames:
-                            try:
-                                if _LOGIN_FAIL_PATTERN.search(fr.content()):
-                                    raise _stust_login_error()
-                            except HTTPException:
-                                raise
-                            except Exception:
-                                pass  # frame 正在跳轉，下一輪再檢查
-                    page.wait_for_timeout(500)
-                if not logged_in and on_identity(page):
-                    raise _stust_login_error()
-
-            # 登入後若不在課表頁，再前往一次
+            # 已進入 ePortal（可能停在 MenuTop.aspx 等頁）：若沒有課表表格，強制前往課表頁
             if not table_ready(page):
-                if "eportal.stust.edu.tw" in page.url and "MyTimeTable" not in page.url:
+                try:
                     page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                except PlaywrightTimeout:
+                    raise stuck(page, "前往課表頁面")
                 try:
                     page.wait_for_selector(ESPORTAL_TABLE_SELECTOR, timeout=20000)
                 except PlaywrightTimeout:
-                    if on_identity(page):
-                        raise _stust_login_error()
-                    raise HTTPException(status_code=502, detail="已登入但找不到課表表格，校務系統頁面可能已改版或暫時無法使用")
+                    raise stuck(page, "等待課表表格出現")
 
             html = page.locator(ESPORTAL_TABLE_SELECTOR).first.evaluate("el => el.outerHTML")
         finally:

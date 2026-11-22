@@ -34,3 +34,4 @@ logs/
 # OpenCV / NumPy cache
 *.npy
 *.npz
+debug_stust_last.png
