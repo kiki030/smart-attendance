@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import { useCamera, isCameraCancelled } from '../hooks/useCamera'
 import { supabase } from '../lib/supabase'
 import type {
   AppUser, AttendanceRecord, LeaveRequest, ScheduleEntry, ScheduleSource, ScheduleSyncResult,
@@ -43,9 +44,8 @@ interface Props { user: AppUser }
 
 export default function TeacherDashboard({ user }: Props) {
   const { apiBase, status: backendStatus } = useApiBase()
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const { videoRef, stream, startCamera, stopCamera } = useCamera()
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [stream, setStream] = useState<MediaStream | null>(null)
   const [rollCallActive, setRollCallActive] = useState(false)
   const [records, setRecords] = useState<AttendanceRecord[]>([])
   const [time, setTime] = useState(new Date())
@@ -108,12 +108,7 @@ export default function TeacherDashboard({ user }: Props) {
     return () => clearInterval(t)
   }, [])
 
-  // Cleanup camera on unmount
-  useEffect(() => {
-    return () => {
-      stream?.getTracks().forEach(t => t.stop())
-    }
-  }, [stream])
+  // 卸載（切換頁面 / 登出）時的鏡頭釋放由 useCamera 內建 cleanup 負責（以 ref 為準，不會抓到過期的 null）
 
   // ── 讀取學生名冊與今日出勤紀錄 ────────────────────────────
   const loadRosterAndAttendance = useCallback(async () => {
@@ -241,24 +236,18 @@ export default function TeacherDashboard({ user }: Props) {
   const startWebcam = useCallback(async () => {
     try {
       setCamError('')
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
-      setStream(mediaStream)
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream
-        videoRef.current.play()
-      }
-    } catch {
+      await startCamera({ video: { width: 1280, height: 720 } })
+    } catch (err) {
+      if (isCameraCancelled(err)) return // 已停止點名 / 離開頁面，不顯示錯誤
       setCamError('無法存取鏡頭，請確認瀏覽器已授予相機權限')
     }
-  }, [])
+  }, [startCamera])
 
   const stopWebcam = useCallback(() => {
-    stream?.getTracks().forEach(t => t.stop())
-    setStream(null)
-    if (videoRef.current) videoRef.current.srcObject = null
+    stopCamera()
     setLiveRollCallResult(null)
     setLiveChecking(false)
-  }, [stream])
+  }, [stopCamera])
 
   function toggleRollCall() {
     if (!rollCallActive) {

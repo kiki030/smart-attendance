@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import type { AppUser } from '../types'
 import { useApiBase } from '../hooks/useApiBase'
+import { useCamera, isCameraCancelled } from '../hooks/useCamera'
 import '../App.css'
 
 interface Props { user: AppUser }
@@ -15,18 +16,18 @@ const STEPS = [
 export default function FaceRegistration({ user }: Props) {
   const navigate = useNavigate()
   const { apiBase, status: backendStatus, recheckStatus } = useApiBase()
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const { videoRef, stream, startCamera, stopCamera } = useCamera()
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [stream, setStream] = useState<MediaStream | null>(null)
   const [currentStep, setCurrentStep] = useState(0)
   const [previews, setPreviews] = useState<(string | null)[]>([null, null, null])
   const [uploadStatus, setUploadStatus] = useState<('idle' | 'uploading' | 'done' | 'error')[]>(['idle', 'idle', 'idle'])
   const [camError, setCamError] = useState('')
   const [uploadMsg, setUploadMsg] = useState('')
 
+  // 進入頁面開啟鏡頭；卸載時由 useCamera 內建 cleanup（以 ref 為準）強制釋放
   useEffect(() => {
     startWebcam()
-    return () => { stream?.getTracks().forEach(t => t.stop()) }
+    return () => stopCamera()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 核心修正：切換步驟時 video 元素會重新掛載，需重新綁定 srcObject ──
@@ -42,15 +43,9 @@ export default function FaceRegistration({ user }: Props) {
   async function startWebcam() {
     try {
       setCamError('')
-      const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: 'user' }
-      })
-      setStream(mediaStream)
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream
-        videoRef.current.play()
-      }
-    } catch {
+      await startCamera({ video: { width: 640, height: 480, facingMode: 'user' } })
+    } catch (err) {
+      if (isCameraCancelled(err)) return // 使用者已離開頁面，不顯示錯誤
       setCamError('無法存取鏡頭，請確認瀏覽器已授予相機權限')
     }
   }
@@ -137,6 +132,17 @@ export default function FaceRegistration({ user }: Props) {
   }
 
   const allDone = uploadStatus.every(s => s === 'done')
+
+  // 三個角度都註冊完成：立即關閉鏡頭（不必等到離開頁面）
+  useEffect(() => {
+    if (allDone) stopCamera()
+  }, [allDone, stopCamera])
+
+  function leaveTo(path: string | number) {
+    stopCamera() // 離開前先關閉鏡頭
+    if (typeof path === 'number') navigate(path)
+    else navigate(path)
+  }
   const currentPreview = previews[currentStep]
 
   return (
@@ -147,7 +153,7 @@ export default function FaceRegistration({ user }: Props) {
       {/* Navbar */}
       <nav className="navbar">
         <div className="nav-left">
-          <button className="back-btn" onClick={() => navigate(-1)}>← 返回</button>
+          <button className="back-btn" onClick={() => leaveTo(-1)}>← 返回</button>
           <div className="nav-logo">🎓 <span className="nav-logo-text">人臉特徵註冊</span></div>
         </div>
         <div className="nav-right">
@@ -200,7 +206,7 @@ export default function FaceRegistration({ user }: Props) {
               三個角度的特徵向量已成功儲存至雲端。<br />
               AI 系統將使用這些特徵進行多角度辨識比對。
             </p>
-            <button className="setup-submit-btn" onClick={() => navigate('/student')}>
+            <button className="setup-submit-btn" onClick={() => leaveTo('/student')}>
               返回學生看板 →
             </button>
           </div>
