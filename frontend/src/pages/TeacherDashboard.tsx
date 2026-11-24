@@ -41,26 +41,6 @@ interface StudentHistoryRecord {
 
 interface Props { user: AppUser }
 
-// 可選課程清單
-const COURSE_OPTIONS = [
-  '人工智慧概論',
-  '專題討論',
-  '資料結構',
-  '演算法',
-  '計算機網路',
-  '作業系統',
-  '資料庫系統',
-  '機器學習',
-]
-
-const MOCK_RECORDS: AttendanceRecord[] = [
-  { id: '1', student_id: '4B2G0001', student_name: '王小明', course_name: '人工智慧概論', date: new Date().toISOString().slice(0, 10), status: 'present' },
-  { id: '2', student_id: '4B2G0002', student_name: '李小花', course_name: '人工智慧概論', date: new Date().toISOString().slice(0, 10), status: 'late' },
-  { id: '3', student_id: '4B2G0003', student_name: '張大雄', course_name: '人工智慧概論', date: new Date().toISOString().slice(0, 10), status: 'absent' },
-  { id: '4', student_id: '4B2G0004', student_name: '陳美玲', course_name: '人工智慧概論', date: new Date().toISOString().slice(0, 10), status: 'present' },
-  { id: '5', student_id: '4B2G0005', student_name: '林志偉', course_name: '人工智慧概論', date: new Date().toISOString().slice(0, 10), status: 'excused_sick' },
-]
-
 export default function TeacherDashboard({ user }: Props) {
   const { apiBase, status: backendStatus } = useApiBase()
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -72,7 +52,7 @@ export default function TeacherDashboard({ user }: Props) {
   const [camError, setCamError] = useState('')
 
   // ── 課程與上課時間設定 ─────────────────────────────────
-  const [selectedCourse, setSelectedCourse] = useState(COURSE_OPTIONS[0])
+  const [selectedCourse, setSelectedCourse] = useState('')  // 由教師同步的授課清單決定，不再使用寫死課程
   const [classStartTime, setClassStartTime] = useState('')  // 格式 'HH:MM'
 
   const [rollCallResult, setRollCallResult] = useState<{
@@ -115,9 +95,9 @@ export default function TeacherDashboard({ user }: Props) {
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([])
   const [reviewingIds, setReviewingIds] = useState<Set<string>>(new Set())
 
-  // 優先使用教師已同步的授課清單；若尚未同步則退回預設課程清單
+  // 課程清單完全來自教師已同步的授課課表（尚未同步則為空）
   const syncedCourses = Array.from(new Set(teacherSchedule.map(s => s.course_name)))
-  const availableCourses = syncedCourses.length > 0 ? syncedCourses : COURSE_OPTIONS
+  const availableCourses = syncedCourses
 
   // Keep draftsRef in sync so loadRosterAndAttendance can read latest drafts without stale closure
   useEffect(() => { draftsRef.current = drafts }, [drafts])
@@ -137,6 +117,10 @@ export default function TeacherDashboard({ user }: Props) {
 
   // ── 讀取學生名冊與今日出勤紀錄 ────────────────────────────
   const loadRosterAndAttendance = useCallback(async () => {
+    if (!selectedCourse) {
+      setRecords([])  // 尚未選擇 / 同步課程：顯示空狀態
+      return
+    }
     try {
       const { data: students, error: studentError } = await supabase
         .from('student_faces')
@@ -181,7 +165,7 @@ export default function TeacherDashboard({ user }: Props) {
       })
     } catch (err) {
       console.error('Error loading roster/attendance:', err)
-      setRecords(MOCK_RECORDS)
+      setRecords([])
     }
   }, [selectedCourse])
 
@@ -710,10 +694,16 @@ export default function TeacherDashboard({ user }: Props) {
                 value={selectedCourse}
                 onChange={e => setSelectedCourse(e.target.value)}
                 className="status-select"
+                disabled={availableCourses.length === 0}
                 style={{ minWidth: '180px', padding: '0.55rem 0.8rem', fontSize: '0.9rem' }}
               >
+                {availableCourses.length === 0 && (
+                  <option value="" style={{ backgroundColor: '#ffffff', color: '#000000' }}>
+                    尚未同步授課課表
+                  </option>
+                )}
                 {availableCourses.map(c => (
-                  <option key={c} value={c}>{c}</option>
+                  <option key={c} value={c} style={{ backgroundColor: '#ffffff', color: '#000000' }}>{c}</option>
                 ))}
               </select>
             </div>
@@ -732,7 +722,7 @@ export default function TeacherDashboard({ user }: Props) {
             </div>
             {/* 目前設定摘要 */}
             <div style={{ padding: '0.5rem 1rem', background: 'rgba(99,102,241,0.12)', borderRadius: '10px', border: '1px solid rgba(99,102,241,0.3)', fontSize: '0.82rem', color: '#a5b4fc' }}>
-              <div>課程：<strong>{selectedCourse}</strong></div>
+              <div>課程：<strong>{selectedCourse || '尚未同步授課課表'}</strong></div>
               <div>上課時間：<strong>{classStartTime || '未設定（不判斷遲到）'}</strong></div>
             </div>
           </div>
@@ -1109,6 +1099,15 @@ export default function TeacherDashboard({ user }: Props) {
                 </tr>
               </thead>
               <tbody>
+                {records.length === 0 && (
+                  <tr>
+                    <td colSpan={6} style={{ textAlign: 'center', padding: '2.5rem 1rem', color: '#64748b' }}>
+                      {selectedCourse
+                        ? '目前尚無學生名冊或出勤紀錄（學生完成人臉註冊後會出現在此）'
+                        : '尚未同步授課課表，請先點擊上方「🔄 同步授課課表」'}
+                    </td>
+                  </tr>
+                )}
                 {records.map(rec => {
                   const draft = drafts[rec.id]
                   const dirty = isDirty(rec.id)
